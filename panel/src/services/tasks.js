@@ -1,0 +1,297 @@
+/**
+ * 任务引擎：所有可能超过 2 秒的操作（装环境、建站、签证书）都异步化为任务。
+ *
+ * 设计要点：
+ *  - 队列落在 SQLite，进程重启不丢任务；启动时把 running 状态的任务标记为
+ *    failed（结果未知），避免“假运行”；
+ *  - 同一目标同一类型不允许并发（避免两个任务同时改 nginx 配置）；
+ *  - 每个任务的事件流既落库（可回看）又实时推给 SSE（可观察）。
+ */
+
+import { getDb, nowIso, parseJson, paging } from '../db/index.js';
+import { uuid } from '../lib/crypto.js';
+import { createLogger } from '../lib/logger.js';
+import { TASK_LABELS, TASK_STATUS } from '../../../shared/protocol.js';
+import { errors } from '../lib/errors.js';
+import { handlers } from './handlers.js';
+import { config } from '../config.js';
+
+const log = createLogger('tasks');
+
+const listeners = new Map(); // taskId -> Set<fn>
+const seqs = new Map(); // taskId -> last seq
+const cancelFlags = new Map(); // taskId -> {aborted:boolean}
+const running = new Set();
+
+export function onTaskEvent(taskId, fn) {
+  if (!listeners.has(taskId)) listeners.set(taskId, new Set());
+  listeners.get(taskId).add(fn);
+  return () => {
+    listeners.get(taskId)?.delete(fn);
+    if (listeners.get(taskId)?.size === 0) listeners.delete(taskId);
+  };
+}
+
+function nextSeq(taskId) {
+  const cur = seqs.get(taskId) ?? 0;
+  const next = cur + 1;
+  seqs.set(taskId, next);
+  return next;
+}
+
+function pushEvent(task, level, message) {
+  const seq = nextSeq(task.id);
+  const at = nowIso();
+  const event = { taskId: task.id, seq, level, message, at };
+  try {
+    getDb().run(
+      'INSERT INTO task_events (task_id, seq, level, message, at) VALUES (?, ?, ?, ?, ?)',
+      [task.id, seq, level, String(message).slice(0, 4000), at],
+    );
+  } catch (err) {
+    log.warn('任务事件落库失败', { message: err.message });
+  }
+  for (const fn of listeners.get(task.id) || []) {
+    try { fn(event); } catch { /* ignore */ }
+  }
+  if (level === 'error') log.warn(`[${task.id}] ${message}`);
+  return event;
+}
+
+export function getTask(id) {
+  const row = getDb().get('SELECT * FROM tasks WHERE id = ?', [id]);
+  return row ? mapTask(row) : null;
+}
+
+function mapTask(row) {
+  return {
+    id: row.id,
+    type: row.type,
+    typeLabel: TASK_LABELS[row.type] || row.type,
+    targetType: row.target_type,
+    targetId: row.target_id,
+    title: row.title,
+    status: row.status,
+    priority: row.priority,
+    progress: row.progress,
+    payload: parseJson(row.payload, {}),
+    result: parseJson(row.result, null),
+    error: row.error,
+    createdBy: row.created_by,
+    startedAt: row.started_at,
+    finishedAt: row.finished_at,
+    createdAt: row.created_at,
+  };
+}
+
+export function listTasks(query = {}) {
+  const db = getDb();
+  const { page, size, offset } = paging(query, { defaultSize: 20 });
+  const where = [];
+  const params = [];
+  if (query.status && TASK_STATUS.includes(query.status)) {
+    where.push('status = ?');
+    params.push(query.status);
+  }
+  if (query.type) { where.push('type = ?'); params.push(query.type); }
+  if (query.targetType) { where.push('target_type = ?'); params.push(query.targetType); }
+  if (query.targetId) { where.push('target_id = ?'); params.push(String(query.targetId)); }
+  const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const total = Number(db.get(`SELECT COUNT(*) c FROM tasks ${clause}`, params).c);
+  const items = db
+    .all(`SELECT * FROM tasks ${clause} ORDER BY created_at DESC LIMIT ? OFFSET ?`, [...params, size, offset])
+    .map(mapTask);
+  return { items, total, page, size };
+}
+
+export function getTaskEvents(taskId, { afterSeq = 0, limit = 500 } = {}) {
+  return getDb()
+    .all(
+      'SELECT seq, level, message, at FROM task_events WHERE task_id = ? AND seq > ? ORDER BY seq LIMIT ?',
+      [taskId, Number(afterSeq) || 0, Math.min(Number(limit) || 500, 2000)],
+    );
+}
+
+export function findActiveTask({ type, targetType, targetId }) {
+  const row = getDb().get(
+    `SELECT * FROM tasks WHERE type = ? AND target_type = ? AND target_id = ?
+     AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 1`,
+    [type, targetType, String(targetId)],
+  );
+  return row ? mapTask(row) : null;
+}
+
+export function createTask({
+  type, title, targetType = null, targetId = null, payload = {}, createdBy = null, priority = 5,
+}) {
+  if (!handlers[type]) throw errors.validation(`未知任务类型：${type}`, 'type');
+
+  if (targetType && targetId != null) {
+    const active = findActiveTask({ type, targetType, targetId });
+    if (active) {
+      throw errors.taskConflict(`该对象已有进行中的任务（${active.typeLabel}），请等待完成`);
+    }
+    // 同一站点不允许并发任何变更类任务
+    if (String(targetType) === 'site') {
+      const any = getDb().get(
+        `SELECT * FROM tasks WHERE target_type = 'site' AND target_id = ?
+         AND status IN ('queued','running') LIMIT 1`,
+        [String(targetId)],
+      );
+      if (any && any.type !== type) {
+        throw errors.taskConflict(`站点尚有未完成任务（${TASK_LABELS[any.type] || any.type}），请等待完成`);
+      }
+    }
+  }
+
+  const id = uuid();
+  const now = nowIso();
+  getDb().run(
+    `INSERT INTO tasks (id, type, target_type, target_id, title, status, priority, payload, created_by, created_at)
+     VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)`,
+    [id, type, targetType, targetId != null ? String(targetId) : null, title,
+      priority, JSON.stringify(payload), createdBy, now],
+  );
+  return getTask(id);
+}
+
+export function cancelTask(id, actor) {
+  const task = getTask(id);
+  if (!task) throw errors.notFound('任务不存在');
+  if (!['queued', 'running'].includes(task.status)) {
+    throw errors.conflict('任务已结束，无法取消');
+  }
+  getDb().run('UPDATE tasks SET status = ?, finished_at = ?, error = ? WHERE id = ?', [
+    'canceled', nowIso(), '用户取消', id,
+  ]);
+  const flag = cancelFlags.get(id);
+  if (flag) flag.aborted = true;
+  pushEvent(task, 'warn', `任务被 ${actor?.username || 'system'} 取消`);
+  notifyFinished(id);
+  return getTask(id);
+}
+
+function notifyFinished(taskId) {
+  for (const fn of listeners.get(taskId) || []) {
+    try { fn({ taskId, seq: -1, level: 'done', message: '任务结束', at: nowIso() }); } catch { /* ignore */ }
+  }
+  setTimeout(() => {
+    listeners.delete(taskId);
+    seqs.delete(taskId);
+    cancelFlags.delete(taskId);
+  }, 60_000).unref?.();
+}
+
+async function executeTask(task) {
+  const ctx = {
+    task,
+    log: (level, msg) => pushEvent(task, level, msg),
+    progress: (pct, msg) => {
+      const value = Math.max(0, Math.min(100, Math.round(pct)));
+      getDb().run('UPDATE tasks SET progress = ? WHERE id = ?', [value, task.id]);
+      pushEvent(task, 'info', msg ? `[${value}%] ${msg}` : `进度 ${value}%`);
+    },
+    canceled: () => cancelFlags.get(task.id)?.aborted === true,
+    signal: null,
+  };
+  const controller = new AbortController();
+  ctx.signal = controller.signal;
+  const flag = { aborted: false, controller };
+  cancelFlags.set(task.id, flag);
+
+  const timer = setInterval(() => {
+    if (flag.aborted) controller.abort();
+  }, 500);
+  timer.unref?.();
+
+  try {
+    pushEvent(task, 'info', `任务开始：${task.title}`);
+    const result = await handlers[task.type](ctx);
+    if (flag.aborted) throw Object.assign(new Error('任务已取消'), { canceled: true });
+    getDb().run(
+      'UPDATE tasks SET status = ?, progress = 100, result = ?, finished_at = ? WHERE id = ?',
+      ['success', JSON.stringify(result ?? null), nowIso(), task.id],
+    );
+    pushEvent(task, 'success', '任务完成');
+  } catch (err) {
+    const canceled = flag.aborted || err?.canceled;
+    getDb().run(
+      'UPDATE tasks SET status = ?, error = ?, finished_at = ? WHERE id = ?',
+      [canceled ? 'canceled' : 'failed', String(err.message || err).slice(0, 2000), nowIso(), task.id],
+    );
+    pushEvent(task, 'error', `任务失败：${err.message || err}`);
+    log.error(`任务 ${task.id} (${task.type}) 失败`, { message: err.message, stack: err.stack });
+  } finally {
+    clearInterval(timer);
+    running.delete(task.id);
+    notifyFinished(task.id);
+  }
+}
+
+let timer = null;
+
+function tick() {
+  if (running.size >= config.taskConcurrency) return;
+  const db = getDb();
+  const slots = config.taskConcurrency - running.size;
+  const rows = db.all(
+    `SELECT * FROM tasks WHERE status = 'queued' ORDER BY priority ASC, created_at ASC LIMIT ?`,
+    [slots],
+  );
+  for (const row of rows) {
+    const claimed = db.run(
+      `UPDATE tasks SET status = 'running', started_at = ? WHERE id = ? AND status = 'queued'`,
+      [nowIso(), row.id],
+    );
+    if (Number(claimed.changes) !== 1) continue;
+    running.add(row.id);
+    const task = getTask(row.id);
+    executeTask(task).catch((err) => log.error('任务执行器异常', { message: err.message }));
+  }
+}
+
+export function startWorker() {
+  if (timer) return;
+  const db = getDb();
+
+  // 进程重启：把“运行中”标记为失败（避免永远卡在 running）
+  const stale = db.run(
+    `UPDATE tasks SET status = 'failed', error = ?, finished_at = ?
+     WHERE status = 'running'`,
+    ['面板重启导致任务中断，请重试', nowIso()],
+  );
+  if (Number(stale.changes) > 0) {
+    log.warn(`有 ${stale.changes} 个任务因面板重启被标记为失败`);
+  }
+
+  timer = setInterval(() => {
+    try { tick(); } catch (err) { log.error('任务调度异常', { message: err.message }); }
+  }, config.taskPollMs);
+  timer.unref?.();
+  tick();
+  log.info(`任务引擎已启动（并发 ${config.taskConcurrency}）`);
+}
+
+export function stopWorker() {
+  if (timer) clearInterval(timer);
+  timer = null;
+}
+
+/** 清理历史任务与事件，避免 SQLite 无限膨胀 */
+export function cleanupOldTasks() {
+  const cutoff = new Date(Date.now() - config.taskRetentionDays * 86400 * 1000).toISOString();
+  const res = getDb().run(
+    "DELETE FROM tasks WHERE created_at < ? AND status IN ('success','failed','canceled')",
+    [cutoff],
+  );
+  return res.changes;
+}
+
+export function taskStats() {
+  const rows = getDb().all('SELECT status, COUNT(*) c FROM tasks GROUP BY status');
+  const out = { queued: 0, running: 0, success: 0, failed: 0, canceled: 0 };
+  for (const r of rows) out[r.status] = Number(r.c);
+  return out;
+}
+
+export { pushEvent };
