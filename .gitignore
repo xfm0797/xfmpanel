@@ -1,0 +1,21 @@
+# 依赖与运行时产物
+node_modules/
+data/
+*.log
+
+# 本地面板数据（含数据库、初始密码、开发证书）
+/var/
+tmp/
+
+# 编辑器与系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 本地 Agent 记忆与工作区数据
+.workbuddy/
+
+# 构建产物
+dist/
+*.tgz
