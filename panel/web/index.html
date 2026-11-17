@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="color-scheme" content="dark" />
+  <title>XFMPanel</title>
+  <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/assets/styles.css" />
+</head>
+<body>
+  <div id="boot" class="boot">
+    <div class="boot-logo">XFM</div>
+    <div class="boot-text">正在连接面板…</div>
+  </div>
+  <div id="root" hidden></div>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <div id="overlay-root"></div>
+  <script type="module" src="/assets/app.js"></script>
+</body>
+</html>
