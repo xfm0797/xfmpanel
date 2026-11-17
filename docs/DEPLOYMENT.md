@@ -38,7 +38,13 @@ curl -fsSL https://raw.githubusercontent.com/xfm0797/xfmpanel/main/deploy/instal
 
 > 用 `wget` 先落盘再执行比管道更稳：apt 步骤若意外读 stdin，管道模式下 stdin 就是脚本本身。URL 中的 `main` 为分支名，按仓库实际情况替换（`master` 等）。
 >
-> 仓库为 **私有** 时 `raw.githubusercontent.com` 需要 token，不能匿名 `wget`。此时二选一：把 `install.sh` 放到自己的静态站点（如 `https://你的域名/install.sh`）后照常 `wget`；或直接 `scp` 到 VPS 再 `sudo bash install.sh --from <git 地址或 tar 包>`。
+> `raw.githubusercontent.com` 在部分网络环境（尤其国内）不可达。仓库已公开，可直接换同一份文件的 CDN 地址：
+>
+> ```bash
+> wget -qO install.sh https://cdn.jsdelivr.net/gh/xfm0797/xfmpanel@main/deploy/install.sh
+> ```
+>
+> 完全断外网的内网机器：把 `install.sh` 与 `xfmpanel.tar.gz` 一起 `scp` 上去，执行 `sudo bash install.sh --from /root/xfmpanel.tar.gz`。
 
 ### 2.2 源码来源（`--from`）
 

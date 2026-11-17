@@ -8,6 +8,7 @@
 #
 # 全新 VPS 不必先克隆仓库 —— 脚本会自己拉源码（单文件自举）：
 #   wget -qO- https://raw.githubusercontent.com/xfm0797/xfmpanel/main/deploy/install.sh | sudo bash
+#   wget -qO- https://cdn.jsdelivr.net/gh/xfm0797/xfmpanel@main/deploy/install.sh | sudo bash   # 国内网络
 #   curl -fsSL .../install.sh | sudo bash -s -- --proxy-domain panel.example.com
 #   sudo bash install.sh --from https://github.com/xfm0797/xfmpanel.git   # 指定其它仓库/压缩包
 #

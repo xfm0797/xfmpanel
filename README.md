@@ -106,6 +106,14 @@ curl -fsSL https://raw.githubusercontent.com/xfm0797/xfmpanel/main/deploy/instal
   | sudo bash -s -- --proxy-domain panel.example.com
 ```
 
+国内网络如果 `raw.githubusercontent.com` 打不开（很常见），换同一个文件的 CDN 地址：
+
+```bash
+wget -qO install.sh https://cdn.jsdelivr.net/gh/xfm0797/xfmpanel@main/deploy/install.sh
+# 或锁定版本
+wget -qO install.sh https://cdn.jsdelivr.net/gh/xfm0797/xfmpanel@v1.0.0/deploy/install.sh
+```
+
 没有域名、想先用 IP 直连：
 
 ```bash
@@ -122,7 +130,7 @@ sudo bash install.sh
 | 内网 / 无外网 | `scp xfmpanel.tar.gz root@vps:/root/` 后 `sudo bash install.sh --from /root/xfmpanel.tar.gz` |
 | 已克隆仓库 | `sudo ./deploy/install.sh`（自动识别本地源码，不再下载） |
 
-> URL 里的 `main` 是分支名，仓库默认分支若是 `master` 请相应替换；私有仓库无法匿名 `wget`，可先把 `install.sh` 放到自己的静态站点，或用 `--from` 指向带 token 的 git 地址 / tar 包。
+> URL 里的 `main` 是分支名，仓库默认分支若是 `master` 请相应替换。`raw.githubusercontent.com`、`codeload.github.com` 在部分网络环境（尤其国内）不可达时，用上面的 jsDelivr 地址即可，内容是同一份文件。
 > 拉取源码默认 180s 超时，可 `XFMP_FETCH_TIMEOUT=300 sudo bash install.sh` 放宽；`--keep-src` 保留临时源码目录便于排查。
 
 脚本会：**自动探测本机公网 IPv4 / IPv6** → 安装 Node 22 → 创建 `xfmpanel` 系统用户与目录 → 生成 agent 密钥与 `panel.env` → 安装两个 systemd 单元 → 启动并健康检查 → 可选生成 nginx 反代配置。
