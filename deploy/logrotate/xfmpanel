@@ -1,0 +1,13 @@
+# XFMPanel 日志轮转（systemd 服务自身日志由 journald 管理）
+# 安装：cp deploy/logrotate/xfmpanel /etc/logrotate.d/xfmpanel
+
+/var/log/xfmpanel/*.log {
+    daily
+    rotate 14
+    missingok
+    notifempty
+    delaycompress
+    compress
+    copytruncate
+    su root xfmpanel
+}

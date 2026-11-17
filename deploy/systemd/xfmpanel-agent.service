@@ -1,0 +1,35 @@
+[Unit]
+Description=XFMPanel privileged agent (runs as root)
+Documentation=https://github.com/xfm0797/xfmpanel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/xfmpanel
+ExecStart=/usr/bin/node /opt/xfmpanel/agent/src/agent.js
+Restart=always
+RestartSec=2
+# socket 目录：/run/xfmpanel（systemd 负责创建与清理）
+RuntimeDirectory=xfmpanel
+RuntimeDirectoryMode=0750
+Environment=XFMP_AGENT_SOCKET=/run/xfmpanel/agent.sock
+Environment=XFMP_AGENT_SECRET_FILE=/etc/xfmpanel/agent.secret
+Environment=XFMP_LOG_DIR=/var/log/xfmpanel
+Environment=XFMP_AGENT_CONCURRENCY=4
+
+# 基础加固。注意：agent 需要安装软件包、操作 systemd、写 /etc/nginx，
+# 因此不能使用 ProtectSystem=strict，但仍可收紧家目录与内核面。
+ProtectHome=true
+ProtectKernelTunables=false
+ProtectKernelModules=true
+ProtectControlGroups=false
+PrivateTmp=false
+RestrictRealtime=true
+LimitNOFILE=65535
+OOMScoreAdjust=-200
+
+[Install]
+WantedBy=multi-user.target

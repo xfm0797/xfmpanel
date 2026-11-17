@@ -1,0 +1,35 @@
+[Unit]
+Description=XFMPanel web panel (unprivileged)
+Documentation=https://github.com/xfm0797/xfmpanel
+After=network-online.target xfmpanel-agent.service
+Wants=network-online.target
+Requires=xfmpanel-agent.service
+
+[Service]
+Type=simple
+User=xfmpanel
+Group=xfmpanel
+WorkingDirectory=/opt/xfmpanel
+EnvironmentFile=-/etc/xfmpanel/panel.env
+ExecStart=/usr/bin/node --disable-warning=ExperimentalWarning /opt/xfmpanel/panel/src/server.js
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+KillSignal=SIGTERM
+
+# 面板进程不持有 root：只读系统，仅可写自己的数据与日志目录
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+ReadWritePaths=/var/lib/xfmpanel /var/log/xfmpanel
+UMask=0027
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
