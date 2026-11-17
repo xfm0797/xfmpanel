@@ -5,6 +5,7 @@
  * 本地开发（win32 或 XFMP_ENV=dev）自动降级为仓库内 ./data 目录 + stub agent。
  */
 
+import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +13,15 @@ import { PATHS } from '../../shared/paths.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '../..');
+
+// 版本号只维护在 package.json，避免面板显示与实际发布版本脱节
+const PKG_VERSION = (() => {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8')).version || '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+})();
 
 const isDev =
   process.env.XFMP_ENV === 'dev' ||
@@ -83,7 +93,7 @@ export const config = Object.freeze({
 
   hostname: os.hostname(),
   timezone: env('XFMP_TZ', 'Asia/Shanghai'),
-  version: '1.0.0',
+  version: PKG_VERSION,
 });
 
 export function isHttpsRequest(req) {
