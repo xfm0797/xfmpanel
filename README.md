@@ -1,5 +1,10 @@
 # XFMPanel
 
+[![release](https://img.shields.io/github/v/release/xfm0797/xfmpanel?label=release)](https://github.com/xfm0797/xfmpanel/releases/latest)
+[![license](https://img.shields.io/github/license/xfm0797/xfmpanel)](LICENSE)
+![node](https://img.shields.io/badge/node-%E2%89%A522.5-339933)
+![deps](https://img.shields.io/badge/dependencies-0-brightgreen)
+
 面向 VPS 的轻量主机管理面板：在 Web 界面里完成 **网站环境一键安装**、**站点全生命周期管理**、**SSL 证书自动签发与续期**，并保留完整的**操作审计**与**运行日志**。
 
 > 设计目标不是"又一个宝塔"，而是给出一个**权限边界清晰、可审计、可维护**的最小可用实现：
@@ -19,6 +24,7 @@
 - [测试](#测试)
 - [已知限制](#已知限制)
 - [文档](#文档)
+- [更新日志](CHANGELOG.md)
 
 ## 功能
 
