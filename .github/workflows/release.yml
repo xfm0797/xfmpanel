@@ -1,0 +1,46 @@
+name: release
+
+# 推送 v* tag 时自动创建 GitHub Release，说明从 CHANGELOG.md 对应版本段落提取。
+# 手动补发历史 tag：gh release create v1.0.0 --notes-file <(sed -n ...) 或在网页上创建。
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 提取本版本说明
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          ver="${tag#v}"
+          awk -v v="$ver" '
+            $0 ~ "^## \\[" v "\\]" { flag = 1; next }
+            flag && /^## \[/ { exit }
+            flag { print }
+          ' CHANGELOG.md > notes.md || true
+          if [ ! -s notes.md ]; then
+            printf '## %s\n\n' "$tag" > notes.md
+            git log -1 --pretty=format:'%s%n%n%b' >> notes.md || true
+          fi
+          echo "----- notes 预览 -----"
+          head -n 20 notes.md
+
+      - name: 创建 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "XFMPanel $GITHUB_REF_NAME" \
+            --notes-file notes.md \
+            --verify-tag
