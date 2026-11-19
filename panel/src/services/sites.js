@@ -206,7 +206,7 @@ export function createSite(input, actor) {
   const rootPath = siteRoot(slug);
   const user = siteUser(slug);
 
-  const id = db.tx(() => {
+  const { id, task } = db.tx(() => {
     const res = db.run(
       `INSERT INTO sites (slug, name, domain, aliases, root_path, site_user, app_type, php_version,
         upstream, status, desired_state, ssl_mode, settings, remark, created_by, created_at, updated_at)
@@ -219,17 +219,19 @@ export function createSite(input, actor) {
       'INSERT INTO site_domains (site_id, domain, is_primary) VALUES (?, ?, ?)',
     );
     domains.forEach((d, i) => stmt.run(siteId, d, i === 0 ? 1 : 0));
-    return siteId;
-  });
 
-  const task = createTask({
-    type: 'site.create',
-    title: `创建站点 ${name}（${domains[0]}）`,
-    targetType: 'site',
-    targetId: String(id),
-    payload: { siteId: id, sslMode },
-    createdBy: actor?.id ?? null,
-    priority: 3,
+    return {
+      id: siteId,
+      task: createTask({
+        type: 'site.create',
+        title: `创建站点 ${name}（${domains[0]}）`,
+        targetType: 'site',
+        targetId: String(siteId),
+        payload: { siteId, sslMode },
+        createdBy: actor?.id ?? null,
+        priority: 3,
+      }),
+    };
   });
 
   log.info(`站点已创建 ${slug}`, { siteId: id, taskId: task.id });
@@ -329,42 +331,50 @@ export function updateSite(id, patch, actor) {
 
   fields.push('updated_at = ?', 'last_error = NULL');
   params.push(nowIso(), id);
-  db.run(`UPDATE sites SET ${fields.join(', ')} WHERE id = ?`, params);
 
-  if (domains !== current.domains) {
-    db.run('DELETE FROM site_domains WHERE site_id = ?', [id]);
-    const stmt = db.db.prepare('INSERT INTO site_domains (site_id, domain, is_primary) VALUES (?, ?, ?)');
-    domains.forEach((d, i) => stmt.run(id, d, i === 0 ? 1 : 0));
-  }
+  // 状态变更与任务入队必须原子化：任务冲突时回滚，避免站点卡在 pending。
+  return db.tx(() => {
+    db.run(`UPDATE sites SET ${fields.join(', ')} WHERE id = ?`, params);
 
-  const task = createTask({
-    type: 'site.apply',
-    title: `应用配置 ${current.name}`,
-    targetType: 'site',
-    targetId: String(id),
-    payload: { siteId: id },
-    createdBy: actor?.id ?? null,
-    priority: 4,
+    if (domains !== current.domains) {
+      db.run('DELETE FROM site_domains WHERE site_id = ?', [id]);
+      const stmt = db.db.prepare('INSERT INTO site_domains (site_id, domain, is_primary) VALUES (?, ?, ?)');
+      domains.forEach((d, i) => stmt.run(id, d, i === 0 ? 1 : 0));
+    }
+
+    const task = createTask({
+      type: 'site.apply',
+      title: `应用配置 ${current.name}`,
+      targetType: 'site',
+      targetId: String(id),
+      payload: { siteId: id },
+      createdBy: actor?.id ?? null,
+      priority: 4,
+    });
+
+    return { site: getSite(id), task };
   });
-
-  return { site: getSite(id), task };
 }
 
 export function deleteSite(id, { keepFiles = true, backup = true } = {}, actor) {
   const site = getSite(id);
   if (site.status === 'deleting') throw errors.conflict('站点正在删除中');
+  const db = getDb();
 
-  getDb().run('UPDATE sites SET status = ?, updated_at = ? WHERE id = ?', ['deleting', nowIso(), id]);
-  const task = createTask({
-    type: 'site.remove',
-    title: `删除站点 ${site.name}`,
-    targetType: 'site',
-    targetId: String(id),
-    payload: { siteId: id, keepFiles, backup, slug: site.slug },
-    createdBy: actor?.id ?? null,
-    priority: 2,
+  // 任务冲突时连同 deleting 状态一起回滚，避免站点被永久锁死。
+  return db.tx(() => {
+    db.run('UPDATE sites SET status = ?, updated_at = ? WHERE id = ?', ['deleting', nowIso(), id]);
+    const task = createTask({
+      type: 'site.remove',
+      title: `删除站点 ${site.name}`,
+      targetType: 'site',
+      targetId: String(id),
+      payload: { siteId: id, keepFiles, backup, slug: site.slug },
+      createdBy: actor?.id ?? null,
+      priority: 2,
+    });
+    return { site: getSite(id), task };
   });
-  return { site: getSite(id), task };
 }
 
 /** 组装给 agent 的站点规格（含证书信息） */

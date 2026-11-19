@@ -161,9 +161,10 @@ export function renderSiteVhost(site) {
     const key = nginxSafePath(site.ssl.keyPath);
     out.push(
       'server {',
-      '    listen 443 ssl;',
-      '    listen [::]:443 ssl;',
-      '    http2 on;',
+      // 兼容 nginx 1.22/1.18（Debian 12 / Ubuntu 22.04 系统源版本）：
+      // 不能使用 1.25.1 才引入的 `http2 on;`，否则 nginx -t 直接失败。
+      '    listen 443 ssl http2;',
+      '    listen [::]:443 ssl http2;',
       `    server_name ${serverName};`,
       '',
       `    ssl_certificate ${cert};`,

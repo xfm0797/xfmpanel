@@ -18,7 +18,9 @@ import {
 import { PATHS, siteRoot, siteLogDir, phpSocketPath, phpPoolPath } from '../../../shared/paths.js';
 import { renderSiteVhost } from '../../../shared/render/nginx.js';
 import { renderPhpPool } from '../../../shared/render/php-pool.js';
-import { s, arr, oneOf, bool, absPath, obj, SLUG_RE, DOMAIN_RE, USER_RE } from './args.js';
+import {
+  s, arr, oneOf, bool, absPath, obj, ArgError, SLUG_RE, DOMAIN_RE, USER_RE,
+} from './args.js';
 
 const CERT_PREFIXES = ['/etc/letsencrypt/live', '/etc/letsencrypt/archive', PATHS.CERT_ROOT];
 
@@ -288,11 +290,20 @@ export const siteOps = {
   },
 
   'site.remove': {
-    validate: (args) => ({
-      slug: s(args.slug, { field: 'slug', max: 32, pattern: SLUG_RE }),
-      siteUser: s(args.siteUser, { field: 'siteUser', max: 32, pattern: USER_RE }),
-      keepFiles: args.keepFiles === undefined ? true : Boolean(args.keepFiles),
-    }),
+    validate: (args) => {
+      const slug = s(args.slug, { field: 'slug', max: 32, pattern: SLUG_RE });
+      const siteUser = s(args.siteUser, { field: 'siteUser', max: 32, pattern: USER_RE });
+      // 必须与 site.apply 的约定一致：只允许删除该站点自己的系统用户，
+      // 避免面板被攻破后传入 root / www-data 等账号造成系统级破坏。
+      if (siteUser !== `xfm_${slug}`.slice(0, 32)) {
+        throw new ArgError('站点系统用户必须为 xfm_<slug>');
+      }
+      return {
+        slug,
+        siteUser,
+        keepFiles: args.keepFiles === undefined ? true : Boolean(args.keepFiles),
+      };
+    },
     run: async ({ slug, siteUser, keepFiles }, emit) => {
       const layout = nginxLayout();
       const vhostPath = path.join(layout.available, `xfm-${slug}.conf`);

@@ -80,37 +80,42 @@ export function issueCertificate({ siteId, domains, force = false }, actor) {
     'SELECT * FROM certificates WHERE site_id = ? AND domain = ?',
     [siteId, list[0]],
   );
-  const now = nowIso();
-  let certId;
-  if (existing) {
-    if (existing.status === 'issued' && !force) {
-      throw errors.conflict('该域名已有有效证书，如需重新签发请勾选强制重签');
-    }
-    db.run(
-      `UPDATE certificates SET alt_names = ?, provider = 'acme', status = 'pending', last_error = NULL, updated_at = ?
-       WHERE id = ?`,
-      [JSON.stringify(list.slice(1)), now, existing.id],
-    );
-    certId = existing.id;
-  } else {
-    const res = db.run(
-      `INSERT INTO certificates (site_id, domain, alt_names, provider, status, auto_renew, created_at, updated_at)
-       VALUES (?, ?, ?, 'acme', 'pending', 1, ?, ?)`,
-      [siteId, list[0], JSON.stringify(list.slice(1)), now, now],
-    );
-    certId = Number(res.lastInsertRowid);
+  if (existing && existing.status === 'issued' && !force) {
+    throw errors.conflict('该域名已有有效证书，如需重新签发请勾选强制重签');
   }
 
-  db.run("UPDATE sites SET ssl_mode = 'acme', updated_at = ? WHERE id = ?", [now, siteId]);
+  const now = nowIso();
+  // 证书意图与任务入队原子化：冲突时回滚，避免证书停在 pending。
+  const { task, certId } = db.tx(() => {
+    let id;
+    if (existing) {
+      db.run(
+        `UPDATE certificates SET alt_names = ?, provider = 'acme', status = 'pending', last_error = NULL, updated_at = ?
+         WHERE id = ?`,
+        [JSON.stringify(list.slice(1)), now, existing.id],
+      );
+      id = existing.id;
+    } else {
+      const res = db.run(
+        `INSERT INTO certificates (site_id, domain, alt_names, provider, status, auto_renew, created_at, updated_at)
+         VALUES (?, ?, ?, 'acme', 'pending', 1, ?, ?)`,
+        [siteId, list[0], JSON.stringify(list.slice(1)), now, now],
+      );
+      id = Number(res.lastInsertRowid);
+    }
 
-  const task = createTask({
-    type: 'cert.issue',
-    title: `申请证书 ${list.join(', ')}`,
-    targetType: 'site',
-    targetId: String(siteId),
-    payload: { certId, siteId, domains: list, force },
-    createdBy: actor?.id ?? null,
-    priority: 3,
+    db.run("UPDATE sites SET ssl_mode = 'acme', updated_at = ? WHERE id = ?", [now, siteId]);
+
+    const created = createTask({
+      type: 'cert.issue',
+      title: `申请证书 ${list.join(', ')}`,
+      targetType: 'site',
+      targetId: String(siteId),
+      payload: { certId: id, siteId, domains: list, force },
+      createdBy: actor?.id ?? null,
+      priority: 3,
+    });
+    return { task: created, certId: id };
   });
 
   log.info(`创建证书申请任务 ${task.id}`, { siteId, domains: list });
@@ -165,28 +170,33 @@ export function uploadCertificate({ siteId, domain, certPem, keyPem }, actor) {
   const target = domain ? String(domain).toLowerCase() : site.domain;
   const existing = db.get('SELECT * FROM certificates WHERE site_id = ? AND domain = ?', [siteId, target]);
   const now = nowIso();
-  let certId;
-  if (existing) {
-    db.run("UPDATE certificates SET provider = 'upload', status = 'pending', last_error = NULL, updated_at = ? WHERE id = ?", [now, existing.id]);
-    certId = existing.id;
-  } else {
-    const res = db.run(
-      `INSERT INTO certificates (site_id, domain, provider, status, auto_renew, created_at, updated_at)
-       VALUES (?, ?, 'upload', 'pending', 0, ?, ?)`,
-      [siteId, target, now, now],
-    );
-    certId = Number(res.lastInsertRowid);
-  }
-  db.run("UPDATE sites SET ssl_mode = 'manual', updated_at = ? WHERE id = ?", [now, siteId]);
 
-  const task = createTask({
-    type: 'cert.upload',
-    title: `上传证书 ${target}`,
-    targetType: 'site',
-    targetId: String(siteId),
-    payload: { certId, siteId, slug: site.slug, domain: target, certPem, keyPem },
-    createdBy: actor?.id ?? null,
-    priority: 3,
+  // 与证书申请一致：状态变更和任务入队必须原子化。
+  const { task, certId } = db.tx(() => {
+    let id;
+    if (existing) {
+      db.run("UPDATE certificates SET provider = 'upload', status = 'pending', last_error = NULL, updated_at = ? WHERE id = ?", [now, existing.id]);
+      id = existing.id;
+    } else {
+      const res = db.run(
+        `INSERT INTO certificates (site_id, domain, provider, status, auto_renew, created_at, updated_at)
+         VALUES (?, ?, 'upload', 'pending', 0, ?, ?)`,
+        [siteId, target, now, now],
+      );
+      id = Number(res.lastInsertRowid);
+    }
+    db.run("UPDATE sites SET ssl_mode = 'manual', updated_at = ? WHERE id = ?", [now, siteId]);
+
+    const created = createTask({
+      type: 'cert.upload',
+      title: `上传证书 ${target}`,
+      targetType: 'site',
+      targetId: String(siteId),
+      payload: { certId: id, siteId, slug: site.slug, domain: target, certPem, keyPem },
+      createdBy: actor?.id ?? null,
+      priority: 3,
+    });
+    return { task: created, certId: id };
   });
   return { task, certId };
 }

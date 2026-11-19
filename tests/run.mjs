@@ -170,6 +170,7 @@ async function main() {
   const vhost = cfg.json?.data?.vhost || '';
   ok('配置预览包含 server_name', vhost.includes(`server_name ${slug}.example.com`));
   ok('配置预览包含 443 监听', vhost.includes('listen 443 ssl'));
+  ok('443 监听兼容 nginx 1.22', vhost.includes('listen 443 ssl http2') && !vhost.includes('http2 on'));
   ok('PHP pool 锁定 open_basedir', (cfg.json?.data?.pool || '').includes('open_basedir'));
 
   console.log('\n[4] 站点停用 / 启用 / 重载');

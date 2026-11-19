@@ -122,32 +122,50 @@ export const handlers = {
       ctx.log('warn', `系统信息获取失败：${err.message}`);
     }
 
-    const result = await callAgent('runtime.install', { kind, version }, agentHooks(ctx));
+    try {
+      const result = await callAgent('runtime.install', { kind, version }, agentHooks(ctx));
 
-    db.run(
-      `UPDATE runtimes SET status = 'active', service_name = ?, install_path = ?, config_path = ?,
-         installed_at = ?, last_error = NULL, meta = ?, updated_at = ?
-       WHERE kind = ? AND version = ?`,
-      [
-        result.serviceName || null,
-        result.installPath || null,
-        result.configPath || null,
-        nowIso(),
-        JSON.stringify({ installedLog: result.log?.slice?.(0, 20) ?? [] }),
-        nowIso(),
-        kind,
-        version,
-      ],
-    );
+      db.run(
+        `UPDATE runtimes SET status = 'active', service_name = ?, install_path = ?, config_path = ?,
+           installed_at = ?, last_error = NULL, meta = ?, updated_at = ?
+         WHERE kind = ? AND version = ?`,
+        [
+          result.serviceName || null,
+          result.installPath || null,
+          result.configPath || null,
+          nowIso(),
+          JSON.stringify({ installedLog: result.log?.slice?.(0, 20) ?? [] }),
+          nowIso(),
+          kind,
+          version,
+        ],
+      );
 
-    const hasDefault = db.get('SELECT id FROM runtimes WHERE kind = ? AND is_default = 1', [kind]);
-    if (!hasDefault) {
-      db.run('UPDATE runtimes SET is_default = 1 WHERE kind = ? AND version = ?', [kind, version]);
-      ctx.log('info', `已将 ${kind} ${version} 设为该组件默认版本`);
+      const hasDefault = db.get('SELECT id FROM runtimes WHERE kind = ? AND is_default = 1', [kind]);
+      if (!hasDefault) {
+        db.run('UPDATE runtimes SET is_default = 1 WHERE kind = ? AND version = ?', [kind, version]);
+        ctx.log('info', `已将 ${kind} ${version} 设为该组件默认版本`);
+      }
+      resolve('runtime', 'INSTALL_FAILED', `runtime:${kind}:${version}`);
+      ctx.log('success', `${kind} ${version} 安装完成`);
+      return result;
+    } catch (err) {
+      // 失败必须离开 installing，否则用户无法重试。
+      db.run(
+        "UPDATE runtimes SET status = 'failed', last_error = ?, updated_at = ? WHERE kind = ? AND version = ?",
+        [String(err.message).slice(0, 1000), nowIso(), kind, version],
+      );
+      raise({
+        level: 'critical',
+        source: 'runtime',
+        code: 'INSTALL_FAILED',
+        title: `安装失败：${kind} ${version}`,
+        message: err.message,
+        resource: `runtime:${kind}:${version}`,
+        dedupeKey: `runtime:install_failed:${kind}:${version}`,
+      });
+      throw err;
     }
-    resolve('runtime', 'INSTALL_FAILED', `runtime:${kind}:${version}`);
-    ctx.log('success', `${kind} ${version} 安装完成`);
-    return result;
   },
 
   'runtime.remove': async (ctx) => {
@@ -261,13 +279,19 @@ export const handlers = {
       }
     }
 
-    await callAgent('site.remove', { slug: site.slug, siteUser: site.siteUser, keepFiles }, agentHooks(ctx));
+    try {
+      await callAgent('site.remove', { slug: site.slug, siteUser: site.siteUser, keepFiles }, agentHooks(ctx));
 
-    db.tx(() => {
-      db.run('DELETE FROM certificates WHERE site_id = ?', [siteId]);
-      db.run('DELETE FROM site_domains WHERE site_id = ?', [siteId]);
-      db.run('DELETE FROM sites WHERE id = ?', [siteId]);
-    });
+      db.tx(() => {
+        db.run('DELETE FROM certificates WHERE site_id = ?', [siteId]);
+        db.run('DELETE FROM site_domains WHERE site_id = ?', [siteId]);
+        db.run('DELETE FROM sites WHERE id = ?', [siteId]);
+      });
+    } catch (err) {
+      // 删除失败必须离开 deleting，否则站点会被永久锁死且无法重试。
+      markSiteError(siteId, err.message);
+      throw err;
+    }
     ctx.log('success', keepFiles ? '站点已删除，站点文件保留在磁盘' : '站点已删除，文件已清理');
     return { removed: true, keepFiles };
   },
@@ -391,29 +415,37 @@ export const handlers = {
     const { certId, siteId, slug, domain, certPem, keyPem } = ctx.task.payload;
     const db = getDb();
     const site = getSite(siteId);
-    const res = await callAgent('cert.upload', { slug, domain, certPem, keyPem }, agentHooks(ctx));
-
-    let notAfter = null;
-    let issuer = '手动上传';
     try {
-      const info = await callAgent('cert.inspect', { certPath: res.certPath }, { timeoutMs: 10000 });
-      notAfter = info.notAfter;
-      issuer = info.issuer || issuer;
+      const res = await callAgent('cert.upload', { slug, domain, certPem, keyPem }, agentHooks(ctx));
+
+      let notAfter = null;
+      let issuer = '手动上传';
+      try {
+        const info = await callAgent('cert.inspect', { certPath: res.certPath }, { timeoutMs: 10000 });
+        notAfter = info.notAfter;
+        issuer = info.issuer || issuer;
+      } catch (err) {
+        ctx.log('warn', `证书解析失败：${err.message}`);
+      }
+
+      db.run(
+        `UPDATE certificates SET status = 'issued', provider = 'upload', cert_path = ?, key_path = ?,
+           fullchain_path = ?, not_after = ?, issuer = ?, last_error = NULL, updated_at = ?
+         WHERE id = ?`,
+        [res.certPath, res.keyPath, res.fullchainPath || res.certPath, notAfter, issuer, nowIso(), certId],
+      );
+
+      const cert = db.get('SELECT * FROM certificates WHERE id = ?', [certId]);
+      await applySiteConfig(ctx, site, { cert });
+      ctx.log('success', '证书已部署，HTTPS 已生效');
+      return { certId, notAfter };
     } catch (err) {
-      ctx.log('warn', `证书解析失败：${err.message}`);
+      db.run(
+        "UPDATE certificates SET status = 'failed', last_error = ?, updated_at = ? WHERE id = ?",
+        [String(err.message).slice(0, 1000), nowIso(), certId],
+      );
+      throw err;
     }
-
-    db.run(
-      `UPDATE certificates SET status = 'issued', provider = 'upload', cert_path = ?, key_path = ?,
-         fullchain_path = ?, not_after = ?, issuer = ?, last_error = NULL, updated_at = ?
-       WHERE id = ?`,
-      [res.certPath, res.keyPath, res.fullchainPath || res.certPath, notAfter, issuer, nowIso(), certId],
-    );
-
-    const cert = db.get('SELECT * FROM certificates WHERE id = ?', [certId]);
-    await applySiteConfig(ctx, site, { cert });
-    ctx.log('success', '证书已部署，HTTPS 已生效');
-    return { certId, notAfter };
   },
 };
 
