@@ -1,6 +1,6 @@
 {
   "name": "xfmpanel",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "XFMPanel - 面向 VPS 的轻量主机管理面板（网站环境 / 站点 / SSL / 日志）",
   "type": "module",

@@ -133,7 +133,7 @@ function shellHtml() {
           <div class="brand-mark">XFM</div>
           <div>
             <div class="brand-name">XFMPanel</div>
-            <div class="brand-ver">v${ui.esc(state.panel.version || '1.0.0')}</div>
+            <div class="brand-ver">v${ui.esc(state.panel.version || '1.0.1')}</div>
           </div>
         </div>
         <nav class="nav">${navGroups}</nav>
@@ -326,7 +326,7 @@ async function boot() {
     const me = await api('/auth/me');
     state.me = me.user;
     state.csrf = me.csrfToken;
-    state.panel = { ...me.settings, version: '1.0.0' };
+    state.panel = { ...me.settings, version: '1.0.1' };
     document.getElementById('boot').hidden = true;
     await bootShell();
   } catch (err) {

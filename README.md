@@ -117,7 +117,7 @@ curl -fsSL https://raw.githubusercontent.com/xfm0797/xfmpanel/main/deploy/instal
 ```bash
 wget -qO install.sh https://cdn.jsdelivr.net/gh/xfm0797/xfmpanel@main/deploy/install.sh
 # 或锁定版本
-wget -qO install.sh https://cdn.jsdelivr.net/gh/xfm0797/xfmpanel@v1.0.0/deploy/install.sh
+wget -qO install.sh https://cdn.jsdelivr.net/gh/xfm0797/xfmpanel@v1.0.1/deploy/install.sh
 ```
 
 没有域名、想先用 IP 直连：
