@@ -360,10 +360,13 @@ export function cleanupOldTasks() {
   const settingDays = Number(getSetting('ops.taskRetentionDays', config.taskRetentionDays));
   const days = Number.isFinite(settingDays) && settingDays > 0 ? settingDays : config.taskRetentionDays;
   const cutoff = new Date(Date.now() - days * 86400 * 1000).toISOString();
-  const res = getDb().run(
+  const db = getDb();
+  const res = db.run(
     "DELETE FROM tasks WHERE created_at < ? AND status IN ('success','failed','canceled')",
     [cutoff],
   );
+  // 同步清理失去宿主任务的孤立事件，避免 task_events 无限增长
+  db.run('DELETE FROM task_events WHERE task_id NOT IN (SELECT id FROM tasks)');
   return res.changes;
 }
 

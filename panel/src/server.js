@@ -19,6 +19,7 @@ import { startMetricsSampler, stopMetricsSampler } from './services/metrics.js';
 import { refreshCertificateStatuses, scheduleRenewals, cleanupCertChecks } from './services/certs.js';
 import { cleanupExpiredSessions } from './services/sessions.js';
 import { cleanupAuditLogs } from './services/audit.js';
+import { cleanupLoginThrottle } from './routes/auth.js';
 import { agentHealth } from './services/agent.js';
 
 const log = createLogger('server');
@@ -94,8 +95,11 @@ function startSchedulers() {
       const tasks = cleanupOldTasks();
       const checks = cleanupCertChecks();
       const audits = cleanupAuditLogs();
-      if (sessions || tasks || checks || audits) {
-        log.info(`清理：会话 ${sessions}，历史任务 ${tasks}，证书巡检 ${checks}，审计日志 ${audits}`);
+      const throttles = cleanupLoginThrottle();
+      if (sessions || tasks || checks || audits || throttles) {
+        log.info(
+          `清理：会话 ${sessions}，历史任务 ${tasks}，证书巡检 ${checks}，审计日志 ${audits}，限流记录 ${throttles}`,
+        );
       }
     } catch (err) {
       log.warn('清理任务失败', { message: err.message });

@@ -74,6 +74,18 @@ function clearThrottle(keys) {
   for (const key of keys) db.run('DELETE FROM login_throttle WHERE key = ?', [key]);
 }
 
+/** 清理已解锁且长期无活动的限流记录，避免 login_throttle 无限增长 */
+export function cleanupLoginThrottle() {
+  const now = Date.now();
+  const res = getDb().run(
+    `DELETE FROM login_throttle
+      WHERE (blocked_until IS NOT NULL AND blocked_until < ?)
+         OR (blocked_until IS NULL AND first_at < ?)`,
+    [new Date(now).toISOString(), new Date(now - 24 * 3600 * 1000).toISOString()],
+  );
+  return res.changes;
+}
+
 function publicUser(user) {
   return {
     id: user.id,
