@@ -237,7 +237,27 @@ async function main() {
     typeof m?.current?.net?.rxBps === 'number');
   ok('指标返回时间序列', Array.isArray(m?.series));
 
-  console.log('\n[7] 删除站点（先备份）');
+  console.log('\n[7] 设置项与静态缓存');
+  const home = await fetch(`${BASE}/`);
+  const etag = home.headers.get('etag');
+  ok('首页返回 ETag', Boolean(etag));
+  const cached = await fetch(`${BASE}/`, { headers: { 'If-None-Match': etag } });
+  ok('静态资源命中 ETag 返回 304', cached.status === 304, `实际 ${cached.status}`);
+
+  const disableAuto = await api('/api/v1/settings', {
+    method: 'PATCH', body: { 'cert.autoRenew': 'false' },
+  });
+  ok('设置可关闭自动续期', disableAuto.status === 200);
+  const scan = await api('/api/v1/certificates/scan', { method: 'POST' });
+  ok('关闭自动续期后巡检不入队', scan.json?.data?.disabled === true, JSON.stringify(scan.json?.data));
+  await api('/api/v1/settings', { method: 'PATCH', body: { 'cert.autoRenew': 'true' } });
+
+  const badSetting = await api('/api/v1/settings', {
+    method: 'PATCH', body: { 'security.loginMaxAttempts': '0' },
+  });
+  ok('非法登录锁定阈值被拒绝', badSetting.status === 422, `实际 ${badSetting.status}`);
+
+  console.log('\n[8] 删除站点（先备份）');
   const del = await api(`/api/v1/sites/${siteId}?keepFiles=1&backup=1`, { method: 'DELETE' });
   ok('删除请求被接受', del.status === 200, JSON.stringify(del.json));
   const delTask = await waitTask(del.json.data.task.id, { verbose: true });
