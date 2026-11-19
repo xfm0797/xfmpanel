@@ -120,6 +120,28 @@ cat /etc/xfmpanel/initial-admin.txt
 curl -s http://127.0.0.1:8787/api/v1/system/health | jq
 ```
 
+### 2.5 低内存机型（1 核 512M）
+
+安装脚本读取 `/proc/meminfo`，`MemTotal ≤ 1024MB` 时自动启用低内存配置；也可显式控制：
+
+```bash
+sudo ./deploy/install.sh --low-memory      # 强制启用
+sudo ./deploy/install.sh --no-low-memory   # 强制标准配置
+sudo ./deploy/install.sh --no-swap         # 不自动创建 swap
+```
+
+| 项目 | 标准 | 低内存 |
+| --- | --- | --- |
+| 任务并发 | 2 | 1 |
+| Node 堆上限 | 运行时默认 | panel 192MB / agent 160MB（systemd drop-in） |
+| agent 并发 | 4 | 2 |
+| 每站点 `pm.max_children` | 10 | 3 |
+| 每站点 `memory_limit` | 256M | 128M |
+| OPcache | 128M / 10000 文件 | 64M / 5000 文件 |
+| swap | 不处理 | 无 swap 时自动创建 1GB（`swappiness=10`） |
+
+建议：512M 机型只承载 1–2 个低流量站点，不要在面板内安装 MariaDB。扩容后重跑 `install.sh --no-low-memory` 会移除低内存 drop-in 并恢复标准默认值（已存在的 `panel.env` 不会被覆盖）。
+
 ## 3. 配置
 
 配置文件：`/etc/xfmpanel/panel.env`（由 systemd 注入）。完整可选项见 `deploy/env.example`。
@@ -135,7 +157,8 @@ curl -s http://127.0.0.1:8787/api/v1/system/health | jq
 | `XFMP_TRUST_PROXY` | `0` | 信任 `X-Forwarded-For`；只有面板位于可信反代之后才设为 `1` |
 | `XFMP_SESSION_TTL_HOURS` | `12` | 会话滑动过期 |
 | `XFMP_LOGIN_MAX_ATTEMPTS` | `5` | 触发锁定前的失败次数 |
-| `XFMP_TASK_CONCURRENCY` | `2` | 同时执行的任务数 |
+| `XFMP_TASK_CONCURRENCY` | `2` | 同时执行的任务数（低内存模式为 `1`） |
+| `XFMP_LOW_MEMORY` | `0` | 低内存配置；安装脚本在 ≤1G 内存时写入 `1` |
 | `XFMP_CERT_RENEW_DAYS` | `30` | 提前续期天数（也可在界面改） |
 
 修改后：

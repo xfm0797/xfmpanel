@@ -5,6 +5,7 @@
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { run, runCapture } from '../lib/exec.js';
@@ -117,6 +118,7 @@ export const runtimeOps = {
         emit.progress(35, `安装 PHP ${version} 及常用扩展`);
         await aptInstall(phpPackages(version), emit);
 
+        const tinyHost = os.totalmem() <= 1280 * 1024 * 1024; // 1C512M / 1G 小内存机型
         const iniPath = `/etc/php/${version}/fpm/conf.d/99-xfmpanel.ini`;
         ensureDir(path.dirname(iniPath), { mode: 0o755 });
         writeAtomic(iniPath, [
@@ -125,14 +127,14 @@ export const runtimeOps = {
           'cgi.fix_pathinfo = 0',
           'display_errors = Off',
           'log_errors = On',
-          'memory_limit = 256M',
+          `memory_limit = ${tinyHost ? 128 : 256}M`,
           'upload_max_filesize = 64M',
           'post_max_size = 64M',
           'max_execution_time = 120',
           'date.timezone = Asia/Shanghai',
           'opcache.enable = 1',
-          'opcache.memory_consumption = 128',
-          'opcache.max_accelerated_files = 10000',
+          `opcache.memory_consumption = ${tinyHost ? 64 : 128}`,
+          `opcache.max_accelerated_files = ${tinyHost ? 5000 : 10000}`,
           'opcache.validate_timestamps = 1',
           'opcache.revalidate_freq = 60',
           '',

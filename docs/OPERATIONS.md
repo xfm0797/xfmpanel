@@ -142,6 +142,8 @@ curl -s http://127.0.0.1:8787/api/v1/system/health | jq '.panel,.agent'
 | `site.defaultAppType` / `defaultPhpVersion` / `defaultRewrite` | `php` / `8.3` / `none` | 新建站点未显式传参时 |
 | `notify.webhookUrl` | 空 | 新告警产生时异步 POST |
 
+低内存机型（`XFMP_LOW_MEMORY=1`，安装脚本在 ≤1G 内存时自动写入）会把任务并发降为 1、新站点默认 `pm.max_children=3`、`memory_limit=128M`，并自动配置 1GB swap 与 Node 堆上限。扩容后可用 `install.sh --no-low-memory` 恢复标准配置，详见 [DEPLOYMENT.md](DEPLOYMENT.md) 2.5。
+
 设置值有类型与范围校验，非法值会被接口拒绝（422），不会写库。生产环境里 `XFMP_TRUST_PROXY` 只在面板确实位于可信反代之后时设为 `1`，否则伪造 `X-Forwarded-For` 可绕过限流并污染审计 IP。
 
 ## 5. 监控与告警

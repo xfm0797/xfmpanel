@@ -44,6 +44,9 @@ IP_FAMILY=""            # 自动选择的主访问地址族：ipv4 | ipv6
 DETECT=1
 PREFER_IPV6=0
 SKIP_NODE=0
+LOW_MEM=""              # 空=按内存自动判断；1=强制低内存；0=强制标准
+ENABLE_SWAP=1
+SWAP_MB=1024
 FROM_SRC="${XFMP_SRC_URL:-}"   # 源码来源：owner/repo[@ref] | git URL | tar 包 URL
 SRC_REF="${XFMP_SRC_REF:-}"
 KEEP_SRC=0
@@ -83,6 +86,9 @@ XFMPanel 安装 / 升级脚本（Debian 12 / Ubuntu 22.04+）
   --ref <分支/标签>       配合 --from 指定分支或 tag
   --keep-src              保留临时下载的源码目录（排查用）
   --skip-node             跳过 Node.js 安装/升级
+  --low-memory            强制启用低内存配置（≤1G 内存自动启用）
+  --no-low-memory         强制使用标准配置
+  --no-swap               低内存机型不自动创建 swap
   -h, --help              显示本帮助
 USAGE
 }
@@ -100,6 +106,9 @@ while [[ $# -gt 0 ]]; do
     --prefer-ipv6) PREFER_IPV6=1; shift ;;
     --no-detect) DETECT=0; shift ;;
     --skip-node) SKIP_NODE=1; shift ;;
+    --low-memory) LOW_MEM=1; shift ;;
+    --no-low-memory) LOW_MEM=0; shift ;;
+    --no-swap) ENABLE_SWAP=0; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "未知参数：$1（--help 查看用法）" ;;
   esac
@@ -435,6 +444,54 @@ if ! command -v systemctl >/dev/null; then
   die "未检测到 systemd，请手工部署或使用容器方案"
 fi
 
+# ---------------------------------------------------------------- 低内存机型
+MEM_MB="$(awk '/^MemTotal:/{printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)"
+[[ "$MEM_MB" =~ ^[0-9]+$ ]] || MEM_MB=0
+if [[ -z "$LOW_MEM" ]]; then
+  if [[ "$MEM_MB" -gt 0 && "$MEM_MB" -le 1024 ]]; then LOW_MEM=1; else LOW_MEM=0; fi
+fi
+if [[ "$LOW_MEM" -eq 1 ]]; then
+  ok "内存 ${MEM_MB:-未知}MB → 启用低内存配置（任务并发 1、PHP 进程池收紧）"
+else
+  ok "内存 ${MEM_MB:-未知}MB → 使用标准配置"
+fi
+
+ensure_swap() {
+  [[ "$ENABLE_SWAP" -eq 1 && "$LOW_MEM" -eq 1 ]] || return 0
+  local cur
+  cur="$(awk '/^SwapTotal:/{printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)"
+  [[ "$cur" =~ ^[0-9]+$ ]] || cur=0
+  if [[ "$cur" -gt 0 ]]; then
+    ok "swap 已启用（${cur}MB）"
+    return 0
+  fi
+  if [[ -f /swapfile ]]; then
+    if swapon /swapfile 2>/dev/null; then
+      grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+      ok "已启用已有的 /swapfile"
+    else
+      warn "已有 /swapfile 但无法启用，跳过（可手动检查）"
+    fi
+    return 0
+  fi
+  info "创建 ${SWAP_MB}MB swap（低内存机型防 OOM）"
+  if ! fallocate -l "${SWAP_MB}M" /swapfile 2>/dev/null; then
+    dd if=/dev/zero of=/swapfile bs=1M count="$SWAP_MB" status=none 2>/dev/null \
+      || { rm -f /swapfile; warn "swap 创建失败（磁盘空间不足？），继续安装"; return 0; }
+  fi
+  chmod 600 /swapfile
+  if ! mkswap /swapfile >/dev/null 2>&1 || ! swapon /swapfile; then
+    rm -f /swapfile
+    warn "swap 启用失败，继续安装（建议手动配置 swap）"
+    return 0
+  fi
+  grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  printf 'vm.swappiness = 10\n' > /etc/sysctl.d/99-xfmpanel-lowmem.conf
+  sysctl -w vm.swappiness=10 >/dev/null 2>&1 || true
+  ok "swap 已启用：${SWAP_MB}MB（swappiness=10）"
+}
+ensure_swap
+
 # ---------------------------------------------------------------- 基础依赖
 info "检查基础依赖（curl / tar / ca-certificates）"
 MISSING_PKGS=()
@@ -542,6 +599,11 @@ if [[ ! -f "$ETC_DIR/panel.env" ]]; then
   NEW_INSTALL=1
   info "生成面板配置 /etc/xfmpanel/panel.env"
   ADMIN_PASS="$(openssl rand -base64 18 | tr -dc 'A-Za-z0-9' | cut -c1-14)Aa1!"
+  # 只有明确配置了反代才信任 X-Forwarded-For，直连部署下保持关闭
+  TRUST_PROXY=0
+  [[ -n "$PROXY_DOMAIN" ]] && TRUST_PROXY=1
+  TASK_CONCURRENCY=2
+  [[ "$LOW_MEM" -eq 1 ]] && TASK_CONCURRENCY=1
   cat > "$ETC_DIR/panel.env" <<EOF
 # XFMPanel 面板配置 —— 由 install.sh 生成于 $(date -Is)
 XFMP_ENV=prod
@@ -558,8 +620,9 @@ XFMP_AGENT_MODE=unix
 XFMP_AGENT_SOCKET=/run/xfmpanel/agent.sock
 XFMP_AGENT_SECRET_FILE=${ETC_DIR}/agent.secret
 XFMP_COOKIE_SECURE=auto
-XFMP_TRUST_PROXY=1
-XFMP_TASK_CONCURRENCY=2
+XFMP_TRUST_PROXY=${TRUST_PROXY}
+XFMP_TASK_CONCURRENCY=${TASK_CONCURRENCY}
+XFMP_LOW_MEMORY=${LOW_MEM}
 XFMP_TZ=Asia/Shanghai
 # 首次启动会用它创建超级管理员，登录后可删除此行
 XFMP_ADMIN_PASSWORD=${ADMIN_PASS}
@@ -590,6 +653,9 @@ fi
 # 升级：补写探测到的地址；旧的 127.0.0.1 占位 URL 在探测成功时一并纠正
 ensure_env XFMP_PUBLIC_IPV4 "$PUBLIC_IPV4"
 ensure_env XFMP_PUBLIC_IPV6 "$PUBLIC_IPV6"
+# 低内存机型：老配置补齐标记；并发只在缺省时补为 1，不覆盖用户显式值
+ensure_env XFMP_LOW_MEMORY "$LOW_MEM"
+[[ "$LOW_MEM" -eq 1 ]] && ensure_env XFMP_TASK_CONCURRENCY 1
 if [[ "$NEW_INSTALL" -eq 0 && -n "$PUBLIC_URL" ]]; then
   OLD_URL="$(sed -n 's/^XFMP_PUBLIC_URL=//p' "$ETC_DIR/panel.env" | head -n1)"
   if [[ "$OLD_URL" == "http://127.0.0.1:${PORT}" || "$OLD_URL" == "http://${BIND}:${PORT}" ]]; then
@@ -602,6 +668,27 @@ fi
 info "安装 systemd 单元"
 sed "s#/usr/bin/node#${NODE_BIN}#g" "$SRC_DIR/deploy/systemd/xfmpanel-agent.service" > /etc/systemd/system/xfmpanel-agent.service
 sed "s#/usr/bin/node#${NODE_BIN}#g" "$SRC_DIR/deploy/systemd/xfmpanel-panel.service" > /etc/systemd/system/xfmpanel-panel.service
+
+# 低内存机型：限制 Node 堆上限并降低 agent 并发（1 核场景避免同时跑多个重任务）
+PANEL_DROPIN=/etc/systemd/system/xfmpanel-panel.service.d
+AGENT_DROPIN=/etc/systemd/system/xfmpanel-agent.service.d
+if [[ "$LOW_MEM" -eq 1 ]]; then
+  install -d -m 0755 "$PANEL_DROPIN" "$AGENT_DROPIN"
+  cat > "$PANEL_DROPIN/low-memory.conf" <<'EOF'
+[Service]
+Environment=NODE_OPTIONS=--max-old-space-size=192
+EOF
+  cat > "$AGENT_DROPIN/low-memory.conf" <<'EOF'
+[Service]
+Environment=XFMP_AGENT_CONCURRENCY=2
+Environment=NODE_OPTIONS=--max-old-space-size=160
+EOF
+  ok "已写入低内存 systemd 配置（panel 192MB / agent 160MB 堆上限）"
+else
+  rm -f "$PANEL_DROPIN/low-memory.conf" "$AGENT_DROPIN/low-memory.conf" 2>/dev/null || true
+  rmdir "$PANEL_DROPIN" "$AGENT_DROPIN" 2>/dev/null || true
+fi
+
 systemctl daemon-reload
 systemctl enable xfmpanel-agent >/dev/null 2>&1
 systemctl enable xfmpanel-panel >/dev/null 2>&1

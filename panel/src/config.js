@@ -45,10 +45,13 @@ function int(key, fallback) {
 }
 
 const devDataDir = path.join(REPO_ROOT, 'data');
+// 1C512M 等小内存机型：安装脚本会写入 XFMP_LOW_MEMORY=1
+const lowMemory = bool('XFMP_LOW_MEMORY', false);
 
 export const config = Object.freeze({
   env: isDev ? 'dev' : 'prod',
   isDev,
+  lowMemory,
 
   // HTTP
   bind: env('XFMP_BIND', '127.0.0.1'),
@@ -84,7 +87,7 @@ export const config = Object.freeze({
   rateLimitPerMinute: int('XFMP_RATE_LIMIT', 240),
 
   // 任务
-  taskConcurrency: int('XFMP_TASK_CONCURRENCY', 2),
+  taskConcurrency: int('XFMP_TASK_CONCURRENCY', lowMemory ? 1 : 2),
   taskPollMs: int('XFMP_TASK_POLL_MS', 1000),
   taskRetentionDays: int('XFMP_TASK_RETENTION_DAYS', 30),
   backupRetentionDays: int('XFMP_BACKUP_RETENTION_DAYS', 30),

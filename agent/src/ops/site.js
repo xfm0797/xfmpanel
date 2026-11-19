@@ -9,6 +9,7 @@
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { run, runCapture } from '../lib/exec.js';
 import {
@@ -23,6 +24,8 @@ import {
 } from './args.js';
 
 const CERT_PREFIXES = ['/etc/letsencrypt/live', '/etc/letsencrypt/archive', PATHS.CERT_ROOT];
+// 1C512M / 1G 小内存机型：设置缺省时使用保守的 PHP 进程池参数
+const TINY_HOST = os.totalmem() <= 1280 * 1024 * 1024;
 
 function validateSsl(ssl, field) {
   if (!ssl || typeof ssl !== 'object') return { enabled: false };
@@ -46,8 +49,8 @@ function validateSettings(input = {}) {
   return {
     rewrite: ['none', 'wordpress', 'laravel', 'thinkphp', 'discuz'].includes(raw.rewrite) ? raw.rewrite : 'none',
     clientMaxBodySizeMb: num(raw.clientMaxBodySizeMb, 64, 1, 4096),
-    maxChildren: num(raw.maxChildren, 10, 2, 80),
-    memoryLimitMb: num(raw.memoryLimitMb, 256, 32, 4096),
+    maxChildren: num(raw.maxChildren, TINY_HOST ? 3 : 10, 2, 80),
+    memoryLimitMb: num(raw.memoryLimitMb, TINY_HOST ? 128 : 256, 32, 4096),
     maxExecutionTime: num(raw.maxExecutionTime, 120, 10, 900),
     uploadMaxFilesizeMb: num(raw.uploadMaxFilesizeMb, 64, 1, 2048),
     forceHttps: raw.forceHttps === undefined ? true : Boolean(raw.forceHttps),

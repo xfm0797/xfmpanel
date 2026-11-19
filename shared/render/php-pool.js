@@ -5,7 +5,11 @@
  * 禁用危险函数 —— 这是 VPS 上多站点共存的最低隔离要求。
  */
 
+import os from 'node:os';
 import { siteRoot, phpSocketPath, siteLogDir } from '../paths.js';
+
+// 1C512M / 1G 小内存机型：settings 缺省时使用更保守的默认值
+const TINY_HOST = os.totalmem() <= 1280 * 1024 * 1024;
 
 const BASE_DISABLED_FUNCTIONS = [
   'exec', 'passthru', 'shell_exec', 'system', 'proc_open', 'popen',
@@ -20,11 +24,11 @@ export function renderPhpPool(site) {
   if (!/^\d\.\d$/.test(String(version))) throw new Error('非法 PHP 版本');
 
   const s = site.settings || {};
-  const maxChildren = clamp(s.maxChildren ?? 10, 2, 80);
+  const maxChildren = clamp(s.maxChildren ?? (TINY_HOST ? 3 : 10), 2, 80);
   const startServers = Math.max(2, Math.round(maxChildren / 4));
   const minSpare = Math.max(1, Math.round(maxChildren / 4));
   const maxSpare = Math.max(3, Math.round(maxChildren / 2));
-  const memoryLimit = clamp(s.memoryLimitMb ?? 256, 32, 4096);
+  const memoryLimit = clamp(s.memoryLimitMb ?? (TINY_HOST ? 128 : 256), 32, 4096);
   const maxExecution = clamp(s.maxExecutionTime ?? 120, 10, 900);
   const uploadMb = clamp(s.uploadMaxFilesizeMb ?? 64, 1, 2048);
   const disabled = [...new Set([...BASE_DISABLED_FUNCTIONS, ...(s.disabledFunctions || [])])]

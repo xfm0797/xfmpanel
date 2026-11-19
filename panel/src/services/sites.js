@@ -24,8 +24,9 @@ const log = createLogger('sites');
 const SETTING_RULES = {
   rewrite: { type: 'enum', values: ['none', 'wordpress', 'laravel', 'thinkphp', 'discuz'], default: 'none' },
   clientMaxBodySizeMb: { type: 'int', min: 1, max: 4096, default: 64 },
-  maxChildren: { type: 'int', min: 2, max: 80, default: 10 },
-  memoryLimitMb: { type: 'int', min: 32, max: 4096, default: 256 },
+  // 小内存机型默认更小的 PHP 进程池与单进程上限，避免多站点叠加后 OOM
+  maxChildren: { type: 'int', min: 2, max: 80, default: config.lowMemory ? 3 : 10 },
+  memoryLimitMb: { type: 'int', min: 32, max: 4096, default: config.lowMemory ? 128 : 256 },
   maxExecutionTime: { type: 'int', min: 10, max: 900, default: 120 },
   uploadMaxFilesizeMb: { type: 'int', min: 1, max: 2048, default: 64 },
   forceHttps: { type: 'bool', default: true },
