@@ -23,20 +23,30 @@ import { createLogger } from '../lib/logger.js';
 const log = createLogger('auth');
 
 function throttleKeys(ip, username) {
-  return [`ip:${ip}`, `user:${username}`];
+  // 只按“IP”和“IP+用户名”计数：不再按用户名全局计数，
+  // 避免攻击者用少量错误密码把管理员账号硬锁 15 分钟（拒绝服务）。
+  return [`ip:${ip}`, `pair:${username}@${ip}`];
 }
 
-function checkThrottle(keys) {
+async function checkThrottle(keys) {
   const db = getDb();
   const now = Date.now();
+  let maxCount = 0;
   for (const key of keys) {
     const row = db.get('SELECT * FROM login_throttle WHERE key = ?', [key]);
-    if (row?.blocked_until && new Date(row.blocked_until).getTime() > now) {
+    if (!row) continue;
+    if (row.blocked_until && new Date(row.blocked_until).getTime() > now) {
       const mins = Math.ceil((new Date(row.blocked_until).getTime() - now) / 60000);
       throw new HttpError('ACCOUNT_LOCKED', {
         message: `尝试次数过多，请 ${mins} 分钟后再试`,
       });
     }
+    maxCount = Math.max(maxCount, Number(row.count) || 0);
+  }
+  // 渐进延迟：连续失败时逐步放慢响应，显著提高暴力破解成本且不会锁死账号。
+  if (maxCount >= 3) {
+    const delay = Math.min((maxCount - 2) * 250, 1500);
+    await new Promise((resolve) => setTimeout(resolve, delay));
   }
 }
 
@@ -80,7 +90,7 @@ export function registerAuthRoutes(app) {
     const password = assertString(ctx.body?.password, { field: 'password', min: 1, max: 128, trim: false });
 
     const keys = throttleKeys(ctx.ip, username);
-    checkThrottle(keys);
+    await checkThrottle(keys);
 
     const user = getUserByUsername(username);
     const fail = (reason, shouldAudit = true) => {
@@ -112,17 +122,10 @@ export function registerAuthRoutes(app) {
       });
       throw new HttpError('FORBIDDEN', { message: '账号已被禁用，请联系管理员' });
     }
-    if (user.locked_until && new Date(user.locked_until).getTime() > Date.now()) {
-      throw new HttpError('ACCOUNT_LOCKED', { message: '账号已被临时锁定，请稍后再试' });
-    }
     if (!verifyPassword(password, user.password_hash)) {
+      // 只记录失败次数用于审计，不再按账号硬锁：硬锁会被用来锁死管理员。
       const attempts = Number(user.failed_attempts) + 1;
-      const locked = attempts >= config.loginMaxAttempts
-        ? new Date(Date.now() + config.loginLockMinutes * 60000).toISOString()
-        : null;
-      getDb().run('UPDATE users SET failed_attempts = ?, locked_until = ? WHERE id = ?', [
-        attempts, locked, user.id,
-      ]);
+      getDb().run('UPDATE users SET failed_attempts = ? WHERE id = ?', [attempts, user.id]);
       fail('bad_password');
     }
 

@@ -101,10 +101,16 @@ export function listSites(query = {}) {
   }
   const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const total = Number(db.get(`SELECT COUNT(*) c FROM sites s ${clause}`, params).c);
+  // 一个站点可能有多张有效证书；用相关子查询取最新一张，避免 JOIN 产生重复行。
   const rows = db.all(
-    `SELECT s.*, c.status AS cert_status, c.not_after AS cert_not_after
+    `SELECT s.*,
+       (SELECT c.status FROM certificates c
+         WHERE c.site_id = s.id AND c.status IN ('issued','expiring')
+         ORDER BY c.id DESC LIMIT 1) AS cert_status,
+       (SELECT c.not_after FROM certificates c
+         WHERE c.site_id = s.id AND c.status IN ('issued','expiring')
+         ORDER BY c.id DESC LIMIT 1) AS cert_not_after
      FROM sites s
-     LEFT JOIN certificates c ON c.site_id = s.id AND c.status IN ('issued','expiring')
      ${clause}
      ORDER BY s.id DESC LIMIT ? OFFSET ?`,
     [...params, size, offset],

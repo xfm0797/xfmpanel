@@ -57,7 +57,9 @@ export const config = Object.freeze({
   // 安装脚本探测到的公网地址（IPv6 不带方括号），用于登录页/概览展示
   publicIpv4: env('XFMP_PUBLIC_IPV4', ''),
   publicIpv6: env('XFMP_PUBLIC_IPV6', ''),
-  trustProxy: bool('XFMP_TRUST_PROXY', !isDev),
+  // 默认不信任 X-Forwarded-For：直连部署下伪造该头可绕过限流/污染审计 IP。
+  // 仅在明确部署在可信反代之后时通过 XFMP_TRUST_PROXY=1 显式开启。
+  trustProxy: bool('XFMP_TRUST_PROXY', false),
   cookieSecure: env('XFMP_COOKIE_SECURE', 'auto'), // auto | 1 | 0
   sessionTtlHours: int('XFMP_SESSION_TTL_HOURS', 12),
   bodyLimitBytes: int('XFMP_BODY_LIMIT', 1024 * 1024),
@@ -85,6 +87,8 @@ export const config = Object.freeze({
   taskConcurrency: int('XFMP_TASK_CONCURRENCY', 2),
   taskPollMs: int('XFMP_TASK_POLL_MS', 1000),
   taskRetentionDays: int('XFMP_TASK_RETENTION_DAYS', 30),
+  certCheckRetentionDays: int('XFMP_CERT_CHECK_RETENTION_DAYS', 90),
+  auditRetentionDays: int('XFMP_AUDIT_RETENTION_DAYS', 180),
 
   // 证书巡检
   certCheckIntervalMs: int('XFMP_CERT_CHECK_INTERVAL_MS', 6 * 60 * 60 * 1000),

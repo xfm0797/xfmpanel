@@ -138,7 +138,9 @@ export const certOps = {
         domains,
         email: args.email ? s(args.email, { field: 'email', max: 128 }) : null,
         webroot: absPath(args.webroot, [PATHS.WWW_ROOT], 'webroot'),
-        force: args.force === undefined ? true : Boolean(args.force),
+        // 默认不加 --force-renewal：certbot 只会在临近到期时真正续期，
+        // 避免每次自动巡检都触发 Let's Encrypt 频率限制。
+        force: Boolean(args.force),
       };
     },
     run: async ({ slug, webroot, force }, emit) => {
@@ -202,10 +204,13 @@ export const certOps = {
     validate: (args) => ({
       slug: s(args.slug, { field: 'slug', max: 32, pattern: SLUG_RE }),
       domain: s(args.domain, { field: 'domain', max: 253, pattern: DOMAIN_RE }),
-      certPem: s(args.certPem, { field: 'certPem', min: 100, max: 100_000, pattern: /BEGIN CERTIFICATE/ }),
-      keyPem: s(args.keyPem, { field: 'keyPem', min: 100, max: 100_000, pattern: /PRIVATE KEY/ }),
+      certPem: s(args.certPem, { field: 'certPem', min: 100, max: 200_000, pattern: /BEGIN CERTIFICATE/ }),
+      keyPem: s(args.keyPem, { field: 'keyPem', min: 100, max: 200_000, pattern: /PRIVATE KEY/ }),
+      chainPem: args.chainPem
+        ? s(args.chainPem, { field: 'chainPem', min: 100, max: 200_000, pattern: /BEGIN CERTIFICATE/ })
+        : '',
     }),
-    run: async ({ slug, domain, certPem, keyPem }, emit) => {
+    run: async ({ slug, domain, certPem, keyPem, chainPem }, emit) => {
       let x509;
       let key;
       try {
@@ -217,10 +222,23 @@ export const certOps = {
       if (new Date(x509.validTo) < new Date()) {
         throw Object.assign(new Error('证书已过期，请上传有效期内的证书'), { code: 'CERT_EXPIRED' });
       }
+      // 证书必须覆盖目标域名（SAN 优先，回退 CN），否则部署后浏览器仍会告警。
+      if (!x509.checkHost(domain)) {
+        throw Object.assign(new Error(`证书不包含域名 ${domain}（SAN/CN 校验失败）`), {
+          code: 'CERT_DOMAIN_MISMATCH',
+        });
+      }
       const certPub = x509.publicKey.export({ type: 'spki', format: 'der' }).toString('base64');
       const keyPub = crypto.createPublicKey(key).export({ type: 'spki', format: 'der' }).toString('base64');
       if (certPub !== keyPub) {
         throw Object.assign(new Error('私钥与证书不匹配'), { code: 'KEY_MISMATCH' });
+      }
+      if (chainPem) {
+        try {
+          new crypto.X509Certificate(chainPem);
+        } catch (err) {
+          throw Object.assign(new Error(`中间证书链解析失败：${err.message}`), { code: 'BAD_PEM' });
+        }
       }
 
       const dir = path.join(PATHS.CERT_ROOT, slug);
@@ -230,10 +248,17 @@ export const certOps = {
       const certPath = path.join(dir, `${base}.crt`);
       const keyPath = path.join(dir, `${base}.key`);
       const chainPath = path.join(dir, `${base}.chain.crt`);
+      const fullchainPath = path.join(dir, `${base}.fullchain.crt`);
 
-      writeAtomic(certPath, certPem.endsWith('\n') ? certPem : `${certPem}\n`, { mode: 0o644 });
+      // 用户可能把完整链直接粘进 certPem，避免重复追加。
+      const leaf = certPem.trim();
+      const chain = chainPem.trim();
+      const fullchain = chain && !leaf.includes(chain) ? `${leaf}\n${chain}` : leaf;
+
+      writeAtomic(certPath, `${leaf}\n`, { mode: 0o644 });
       writeAtomic(keyPath, keyPem.endsWith('\n') ? keyPem : `${keyPem}\n`, { mode: 0o600 });
-      writeAtomic(chainPath, `${certPem}\n`, { mode: 0o644 });
+      if (chain) writeAtomic(chainPath, `${chain}\n`, { mode: 0o644 });
+      writeAtomic(fullchainPath, `${fullchain}\n`, { mode: 0o644 });
 
       emit.log('info', `证书已写入 ${dir}（私钥权限 0600）`);
       const info = {
@@ -242,7 +267,7 @@ export const certOps = {
         notAfter: new Date(x509.validTo).toISOString(),
         fingerprint: x509.fingerprint256,
       };
-      return { certPath, keyPath, fullchainPath: certPath, ...info };
+      return { certPath, keyPath, chainPath: chain ? chainPath : null, fullchainPath, ...info };
     },
   },
 

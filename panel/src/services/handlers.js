@@ -356,6 +356,8 @@ export const handlers = {
         domains,
         email,
         webroot: `${siteRoot(site.slug)}/public`,
+        // 手动续期强制重签；自动续期交给 certbot 判断是否临近到期，避免触发频率限制。
+        force: !auto,
       }, agentHooks(ctx));
 
       db.run(
@@ -412,11 +414,11 @@ export const handlers = {
   },
 
   'cert.upload': async (ctx) => {
-    const { certId, siteId, slug, domain, certPem, keyPem } = ctx.task.payload;
+    const { certId, siteId, slug, domain, certPem, keyPem, chainPem } = ctx.task.payload;
     const db = getDb();
     const site = getSite(siteId);
     try {
-      const res = await callAgent('cert.upload', { slug, domain, certPem, keyPem }, agentHooks(ctx));
+      const res = await callAgent('cert.upload', { slug, domain, certPem, keyPem, chainPem }, agentHooks(ctx));
 
       let notAfter = null;
       let issuer = '手动上传';

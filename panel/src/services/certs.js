@@ -17,6 +17,19 @@ import { createLogger } from '../lib/logger.js';
 
 const log = createLogger('certs');
 
+const CERT_TASK_TYPES = ['cert.issue', 'cert.upload', 'cert.renew', 'cert.revoke'];
+
+/** 同一站点的所有证书任务互斥，避免签发/续期/吊销并发改写同一份证书与 vhost */
+function assertNoCertTask(siteId) {
+  const placeholders = CERT_TASK_TYPES.map(() => '?').join(',');
+  const row = getDb().get(
+    `SELECT id FROM tasks WHERE target_type = 'site' AND target_id = ?
+       AND type IN (${placeholders}) AND status IN ('queued','running')`,
+    [String(siteId), ...CERT_TASK_TYPES],
+  );
+  if (row) throw errors.taskConflict('该站点已有进行中的证书任务');
+}
+
 export function daysLeft(notAfter) {
   if (!notAfter) return null;
   return Math.floor((new Date(notAfter).getTime() - Date.now()) / 86400000);
@@ -70,11 +83,7 @@ export function issueCertificate({ siteId, domains, force = false }, actor) {
   const list = domains ? assertDomains(domains) : site.domains;
   const db = getDb();
 
-  const pending = db.get(
-    "SELECT id FROM tasks WHERE type IN ('cert.issue','cert.renew') AND target_type = 'site' AND target_id = ? AND status IN ('queued','running')",
-    [String(siteId)],
-  );
-  if (pending) throw errors.taskConflict('该站点已有进行中的证书任务');
+  assertNoCertTask(siteId);
 
   const existing = db.get(
     'SELECT * FROM certificates WHERE site_id = ? AND domain = ?',
@@ -125,17 +134,13 @@ export function issueCertificate({ siteId, domains, force = false }, actor) {
 export function renewCertificate(id, actor, { auto = false } = {}) {
   const cert = getCertificate(id);
   if (cert.status === 'revoked') throw errors.conflict('证书已吊销，无法续期');
-  const pending = getDb().get(
-    "SELECT id FROM tasks WHERE type = 'cert.renew' AND target_type = 'cert' AND target_id = ? AND status IN ('queued','running')",
-    [String(id)],
-  );
-  if (pending) throw errors.taskConflict('该证书已有进行中的续期任务');
+  assertNoCertTask(cert.site_id);
 
   const task = createTask({
     type: 'cert.renew',
     title: `续期证书 ${cert.domain}`,
-    targetType: 'cert',
-    targetId: String(id),
+    targetType: 'site',
+    targetId: String(cert.site_id),
     payload: { certId: id, siteId: cert.site_id, domains: [cert.domain, ...parseJson(cert.alt_names, [])], auto },
     createdBy: actor?.id ?? null,
     priority: auto ? 2 : 4,
@@ -146,11 +151,12 @@ export function renewCertificate(id, actor, { auto = false } = {}) {
 export function revokeCertificate(id, actor) {
   const cert = getCertificate(id);
   if (cert.status === 'revoked') throw errors.conflict('证书已经是吊销状态');
+  assertNoCertTask(cert.site_id);
   const task = createTask({
     type: 'cert.revoke',
     title: `吊销证书 ${cert.domain}`,
-    targetType: 'cert',
-    targetId: String(id),
+    targetType: 'site',
+    targetId: String(cert.site_id),
     payload: { certId: id, siteId: cert.site_id, domain: cert.domain },
     createdBy: actor?.id ?? null,
     priority: 4,
@@ -158,16 +164,20 @@ export function revokeCertificate(id, actor) {
   return { task };
 }
 
-export function uploadCertificate({ siteId, domain, certPem, keyPem }, actor) {
+export function uploadCertificate({ siteId, domain, certPem, keyPem, chainPem = '' }, actor) {
   const site = getSite(siteId);
   if (!certPem.includes('BEGIN CERTIFICATE') || !keyPem.includes('PRIVATE KEY')) {
     throw errors.validation('证书或私钥格式不正确（需 PEM 格式）', 'certPem');
   }
-  if (certPem.length > 100_000 || keyPem.length > 100_000) {
+  if (chainPem && !chainPem.includes('BEGIN CERTIFICATE')) {
+    throw errors.validation('中间证书链格式不正确（需 PEM 格式）', 'chainPem');
+  }
+  if (certPem.length > 200_000 || keyPem.length > 200_000 || chainPem.length > 200_000) {
     throw errors.validation('证书内容过大', 'certPem');
   }
+  assertNoCertTask(siteId);
   const db = getDb();
-  const target = domain ? String(domain).toLowerCase() : site.domain;
+  const target = domain ? assertDomains([domain], 'domain')[0] : site.domain;
   const existing = db.get('SELECT * FROM certificates WHERE site_id = ? AND domain = ?', [siteId, target]);
   const now = nowIso();
 
@@ -192,7 +202,7 @@ export function uploadCertificate({ siteId, domain, certPem, keyPem }, actor) {
       title: `上传证书 ${target}`,
       targetType: 'site',
       targetId: String(siteId),
-      payload: { certId: id, siteId, slug: site.slug, domain: target, certPem, keyPem },
+      payload: { certId: id, siteId, slug: site.slug, domain: target, certPem, keyPem, chainPem },
       createdBy: actor?.id ?? null,
       priority: 3,
     });
@@ -269,9 +279,11 @@ export function scheduleRenewals() {
   for (const row of rows) {
     const left = daysLeft(row.not_after);
     if (left === null || left > threshold) continue;
+    const placeholders = CERT_TASK_TYPES.map(() => '?').join(',');
     const busy = db.get(
-      "SELECT id FROM tasks WHERE type = 'cert.renew' AND target_id = ? AND status IN ('queued','running')",
-      [String(row.id)],
+      `SELECT id FROM tasks WHERE target_type = 'site' AND target_id = ?
+         AND type IN (${placeholders}) AND status IN ('queued','running')`,
+      [String(row.site_id), ...CERT_TASK_TYPES],
     );
     if (busy) continue;
     try {
@@ -283,6 +295,12 @@ export function scheduleRenewals() {
   }
   if (queued.length) log.info(`自动续期已入队 ${queued.length} 个证书`);
   return { scanned: rows.length, queued };
+}
+
+/** 清理历史巡检记录，避免 cert_checks 无限增长 */
+export function cleanupCertChecks() {
+  const cutoff = new Date(Date.now() - config.certCheckRetentionDays * 86400 * 1000).toISOString();
+  return getDb().run('DELETE FROM cert_checks WHERE checked_at < ?', [cutoff]).changes;
 }
 
 export function certStats() {

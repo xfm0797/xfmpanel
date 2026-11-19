@@ -5,6 +5,7 @@
  * 因为 panel 进程被攻破时不能信任它传来的任何字段（纵深防御）。
  */
 
+import { domainToASCII } from 'node:url';
 import { PATHS } from './paths.js';
 
 export class ValidationError extends Error {
@@ -18,8 +19,8 @@ export class ValidationError extends Error {
 }
 
 const SLUG_RE = /^[a-z][a-z0-9-]{1,30}[a-z0-9]$/;
-// 允许 punycode(xn--)、字母数字与连字符；标签长度 1-63
-const DOMAIN_RE = /^(?=.{1,253}$)(?!-)[a-z0-9\u4e00-\u9fa5-]{1,63}(?<!-)(\.(?!-)[a-z0-9\u4e00-\u9fa5-]{1,63}(?<!-))+$/i;
+// 只接受 ASCII 域名（含 punycode）；中文域名在断言阶段统一转成 xn-- 形式
+const DOMAIN_RE = /^(?=.{1,253}$)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$/i;
 const IPV4_RE = /^(\d{1,3}\.){3}\d{1,3}$/;
 
 export function ok(value) {
@@ -39,12 +40,18 @@ export function assertSlug(value, field = 'slug') {
 
 export function assertDomain(value, field = 'domain') {
   if (typeof value !== 'string') throw new ValidationError('域名格式不正确', field);
-  const v = value.trim().toLowerCase();
+  let v = value.trim().toLowerCase();
   if (v.length > 253) throw new ValidationError('域名过长', field);
   if (IPV4_RE.test(v)) {
     const parts = v.split('.').map(Number);
     if (parts.some((p) => p > 255)) throw new ValidationError('IP 地址不合法', field);
     return v;
+  }
+  // 中文等 IDN 统一转 punycode，保证 agent/nginx/certbot 看到的是 ASCII 域名
+  if (/[^\x00-\x7f]/.test(v)) {
+    const ascii = domainToASCII(v);
+    if (!ascii) throw new ValidationError('域名格式不正确，例如 example.com', field);
+    v = ascii;
   }
   if (!DOMAIN_RE.test(v)) throw new ValidationError('域名格式不正确，例如 example.com', field);
   if (!v.includes('.')) throw new ValidationError('请填写完整域名，例如 example.com', field);

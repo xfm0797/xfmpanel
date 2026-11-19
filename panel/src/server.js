@@ -16,8 +16,9 @@ import { middlewares } from './http/security.js';
 import { registerRoutes } from './routes/index.js';
 import { startWorker, stopWorker, cleanupOldTasks } from './services/tasks.js';
 import { startMetricsSampler, stopMetricsSampler } from './services/metrics.js';
-import { refreshCertificateStatuses, scheduleRenewals } from './services/certs.js';
+import { refreshCertificateStatuses, scheduleRenewals, cleanupCertChecks } from './services/certs.js';
 import { cleanupExpiredSessions } from './services/sessions.js';
+import { cleanupAuditLogs } from './services/audit.js';
 import { agentHealth } from './services/agent.js';
 
 const log = createLogger('server');
@@ -91,7 +92,11 @@ function startSchedulers() {
     try {
       const sessions = cleanupExpiredSessions();
       const tasks = cleanupOldTasks();
-      if (sessions || tasks) log.info(`清理：会话 ${sessions}，历史任务 ${tasks}`);
+      const checks = cleanupCertChecks();
+      const audits = cleanupAuditLogs();
+      if (sessions || tasks || checks || audits) {
+        log.info(`清理：会话 ${sessions}，历史任务 ${tasks}，证书巡检 ${checks}，审计日志 ${audits}`);
+      }
     } catch (err) {
       log.warn('清理任务失败', { message: err.message });
     }
