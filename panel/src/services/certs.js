@@ -269,6 +269,10 @@ export function refreshCertificateStatuses() {
 
 /** 自动续期：剩余天数小于阈值且开启自动续期的证书入队 */
 export function scheduleRenewals() {
+  // 自动续期总开关：关闭后仍可手动续期，但巡检不再自动入队。
+  if (String(getSetting('cert.autoRenew', 'true')).toLowerCase() === 'false') {
+    return { scanned: 0, queued: [], disabled: true };
+  }
   const db = getDb();
   const threshold = Number(getSetting('cert.renewBeforeDays', config.certRenewBeforeDays));
   const rows = db.all(

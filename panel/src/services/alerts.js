@@ -4,9 +4,32 @@
  */
 
 import { getDb, nowIso, paging } from '../db/index.js';
+import { getSetting } from '../db/seed.js';
 import { createLogger } from '../lib/logger.js';
 
 const log = createLogger('alerts');
+
+/** 新告警异步推送到 notify.webhookUrl（失败只记日志，不影响主流程） */
+function sendWebhook(alert) {
+  let url = '';
+  try {
+    url = String(getSetting('notify.webhookUrl', '') || '').trim();
+  } catch {
+    return;
+  }
+  if (!/^https?:\/\//i.test(url)) return;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
+  timer.unref?.();
+  fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type: 'alert', alert }),
+    signal: controller.signal,
+  })
+    .catch((err) => log.warn(`告警 Webhook 推送失败：${err.message}`))
+    .finally(() => clearTimeout(timer));
+}
 
 export function raise({
   level = 'warning',
@@ -36,7 +59,9 @@ export function raise({
     [level, source, code, title, message, resource, key, now, now],
   );
   log.warn(`新告警 [${level}] ${title}`);
-  return { id: Number(res.lastInsertRowid), updated: false };
+  const id = Number(res.lastInsertRowid);
+  sendWebhook({ id, level, source, code, title, message, resource, at: now });
+  return { id, updated: false };
 }
 
 /** 条件恢复后自动关闭对应告警 */

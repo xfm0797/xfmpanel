@@ -15,6 +15,7 @@ import { TASK_LABELS, TASK_STATUS } from '../../../shared/protocol.js';
 import { errors } from '../lib/errors.js';
 import { handlers } from './handlers.js';
 import { config } from '../config.js';
+import { getSetting } from '../db/seed.js';
 
 const log = createLogger('tasks');
 
@@ -356,7 +357,9 @@ export function stopWorker() {
 
 /** 清理历史任务与事件，避免 SQLite 无限膨胀 */
 export function cleanupOldTasks() {
-  const cutoff = new Date(Date.now() - config.taskRetentionDays * 86400 * 1000).toISOString();
+  const settingDays = Number(getSetting('ops.taskRetentionDays', config.taskRetentionDays));
+  const days = Number.isFinite(settingDays) && settingDays > 0 ? settingDays : config.taskRetentionDays;
+  const cutoff = new Date(Date.now() - days * 86400 * 1000).toISOString();
   const res = getDb().run(
     "DELETE FROM tasks WHERE created_at < ? AND status IN ('success','failed','canceled')",
     [cutoff],

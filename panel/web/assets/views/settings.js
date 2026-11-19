@@ -69,7 +69,7 @@ export async function render(el, ctx) {
         <div class="card-head"><h2>通知与路径</h2></div>
         <div class="field"><label>Webhook 地址（可选）</label>
           <input class="input" data-k="notify.webhookUrl" placeholder="https://hooks.example.com/xxx" value="${ui.esc(s['notify.webhookUrl'] || '')}" ${disabled} />
-          <div class="help">严重告警会向该地址 POST JSON，可接入企业微信/飞书机器人</div></div>
+          <div class="help">新增告警会向该地址 POST JSON，可接入企业微信/飞书机器人</div></div>
         <dl class="kv">
           <dt>数据库</dt><dd>${ui.esc(paths.config?.dbPath || '')}</dd>
           <dt>日志目录</dt><dd>${ui.esc(paths.config?.logDir || '')}</dd>

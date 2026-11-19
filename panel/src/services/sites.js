@@ -13,6 +13,7 @@ import {
 } from '../../../shared/validate.js';
 import { siteRoot, siteUser, phpSocketPath } from '../../../shared/paths.js';
 import { createTask } from './tasks.js';
+import { getSetting } from '../db/seed.js';
 import { SITE_STATUS } from '../../../shared/protocol.js';
 import { createLogger } from '../lib/logger.js';
 import { renderSiteVhost } from '../../../shared/render/nginx.js';
@@ -193,14 +194,21 @@ export function createSite(input, actor) {
   const name = assertString(input.name, { field: 'name', min: 1, max: 64 });
   const slug = assertSlug(input.slug || deriveSlug(name), 'slug');
   const domains = assertDomains(input.domains || input.domain, 'domains');
-  const appType = assertEnum(input.appType || 'php', ['php', 'static', 'proxy'], 'appType');
+  const appType = assertEnum(
+    input.appType || getSetting('site.defaultAppType', 'php'),
+    ['php', 'static', 'proxy'],
+    'appType',
+  );
   const phpVersion = appType === 'php'
-    ? assertPhpVersion(input.phpVersion || '8.3')
+    ? assertPhpVersion(input.phpVersion || getSetting('site.defaultPhpVersion', '8.3'))
     : null;
   const upstream = appType === 'proxy' ? assertString(input.upstream, { field: 'upstream', min: 8, max: 200 }) : null;
   const sslMode = assertEnum(input.sslMode || 'none', ['none', 'acme', 'manual'], 'sslMode');
   const remark = input.remark ? assertString(input.remark, { field: 'remark', max: 200 }) : '';
-  const settings = normalizeSettings(input.settings || {});
+  const settings = normalizeSettings({
+    rewrite: getSetting('site.defaultRewrite', 'none'),
+    ...(input.settings || {}),
+  });
 
   if (db.get('SELECT id FROM sites WHERE slug = ?', [slug])) {
     throw errors.conflict(`站点标识 ${slug} 已存在`, { field: 'slug' });

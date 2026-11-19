@@ -3,8 +3,8 @@
  *
  * 防暴力破解采取三层：
  *   1) 全局 IP 限流（security.rateLimit）
- *   2) login_throttle 表：按 IP 与用户名分别计数，超阈值锁定 15 分钟
- *   3) 用户维度 failed_attempts，跨 IP 也生效
+ *   2) login_throttle 表：按 IP 与“IP+用户名”计数，超阈值锁定 15 分钟
+ *   3) 连续失败渐进延迟；用户维度只记 failed_attempts 供审计，不做账号硬锁
  */
 
 import { getDb, nowIso } from '../db/index.js';
@@ -15,7 +15,7 @@ import { verifyPassword } from '../lib/crypto.js';
 import { errors, HttpError } from '../lib/errors.js';
 import { requireLogin } from '../http/security.js';
 import { config, isHttpsRequest } from '../config.js';
-import { getSettings } from '../db/seed.js';
+import { getSetting, getSettings } from '../db/seed.js';
 import { AUDIT_ACTIONS } from '../../../shared/protocol.js';
 import { assertString } from '../../../shared/validate.js';
 import { createLogger } from '../lib/logger.js';
@@ -53,6 +53,8 @@ async function checkThrottle(keys) {
 function bumpThrottle(keys) {
   const db = getDb();
   const now = new Date();
+  const configured = Number(getSetting('security.loginMaxAttempts', config.loginMaxAttempts));
+  const maxAttempts = Number.isFinite(configured) && configured >= 1 ? configured : config.loginMaxAttempts;
   for (const key of keys) {
     const row = db.get('SELECT * FROM login_throttle WHERE key = ?', [key]);
     if (!row) {
@@ -60,7 +62,7 @@ function bumpThrottle(keys) {
       continue;
     }
     const count = Number(row.count) + 1;
-    const blocked = count >= config.loginMaxAttempts
+    const blocked = count >= maxAttempts
       ? new Date(Date.now() + config.loginLockMinutes * 60000).toISOString()
       : null;
     db.run('UPDATE login_throttle SET count = ?, blocked_until = ? WHERE key = ?', [count, blocked, key]);
@@ -137,7 +139,8 @@ export function registerAuthRoutes(app) {
 
     const session = createSession(user.id, { ip: ctx.ip, ua: ctx.ua });
     ctx.setCookie(SESSION_COOKIE, session.token, {
-      maxAge: config.sessionTtlHours * 3600,
+      // 以会话实际过期时间为准，跟随 security.sessionTtlHours 设置
+      maxAge: Math.max(60, Math.floor((new Date(session.expiresAt).getTime() - Date.now()) / 1000)),
       secure: isHttpsRequest(ctx.req),
     });
 
