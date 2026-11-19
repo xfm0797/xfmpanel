@@ -16,8 +16,11 @@ import { middlewares } from './http/security.js';
 import { registerRoutes } from './routes/index.js';
 import { startWorker, stopWorker, cleanupOldTasks } from './services/tasks.js';
 import { startMetricsSampler, stopMetricsSampler } from './services/metrics.js';
-import { refreshCertificateStatuses, scheduleRenewals } from './services/certs.js';
+import { refreshCertificateStatuses, scheduleRenewals, cleanupCertChecks } from './services/certs.js';
 import { cleanupExpiredSessions } from './services/sessions.js';
+import { cleanupAuditLogs } from './services/audit.js';
+import { cleanupOldBackups } from './services/backups.js';
+import { cleanupLoginThrottle } from './routes/auth.js';
 import { agentHealth } from './services/agent.js';
 
 const log = createLogger('server');
@@ -87,11 +90,20 @@ function startSchedulers() {
   timers.push(setTimeout(() => runCertScan('startup'), 30_000).unref?.() ?? null);
   timers.push(setInterval(() => runCertScan('periodic'), config.certCheckIntervalMs));
 
-  timers.push(setInterval(() => {
+  timers.push(setInterval(async () => {
     try {
       const sessions = cleanupExpiredSessions();
       const tasks = cleanupOldTasks();
-      if (sessions || tasks) log.info(`清理：会话 ${sessions}，历史任务 ${tasks}`);
+      const checks = cleanupCertChecks();
+      const audits = cleanupAuditLogs();
+      const throttles = cleanupLoginThrottle();
+      const backups = await cleanupOldBackups();
+      if (sessions || tasks || checks || audits || throttles || backups.deleted) {
+        log.info(
+          `清理：会话 ${sessions}，历史任务 ${tasks}，证书巡检 ${checks}，审计日志 ${audits}，`
+          + `限流记录 ${throttles}，过期备份 ${backups.deleted}`,
+        );
+      }
     } catch (err) {
       log.warn('清理任务失败', { message: err.message });
     }

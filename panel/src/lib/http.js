@@ -204,23 +204,34 @@ export function createApp() {
     if (!filePath.startsWith(config.webDir)) {
       return { status: 403, body: 'Forbidden' };
     }
-    if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
+
+    let st = await fs.promises.stat(filePath).catch(() => null);
+    if (!st || st.isDirectory()) {
       // SPA 回退：非静态资源路径交给前端路由
       if (!path.extname(urlPath)) {
         filePath = path.join(config.webDir, 'index.html');
+        st = await fs.promises.stat(filePath).catch(() => null);
       } else {
         return { status: 404, body: 'Not Found' };
       }
     }
-    if (!fs.existsSync(filePath)) return { status: 404, body: 'Not Found' };
+    if (!st || !st.isFile()) return { status: 404, body: 'Not Found' };
 
     const ext = path.extname(filePath).toLowerCase();
-    const content = fs.readFileSync(filePath);
+    const cacheControl = ext === '.html' ? 'no-store' : 'public, max-age=3600';
+    // 弱 ETag：文件大小 + mtime，足够覆盖部署时的静态资源变更
+    const etag = `W/"${st.size.toString(16)}-${Math.floor(st.mtimeMs).toString(16)}"`;
+    if (ctx.headers['if-none-match'] === etag) {
+      return { status: 304, headers: { ETag: etag, 'Cache-Control': cacheControl } };
+    }
+
+    const content = await fs.promises.readFile(filePath);
     return {
       status: 200,
       headers: {
         'Content-Type': MIME[ext] || 'application/octet-stream',
-        'Cache-Control': ext === '.html' ? 'no-store' : 'public, max-age=3600',
+        ETag: etag,
+        'Cache-Control': cacheControl,
       },
       body: content,
     };

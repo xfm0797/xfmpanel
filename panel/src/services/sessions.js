@@ -6,15 +6,22 @@
 import { getDb, nowIso } from '../db/index.js';
 import { randomToken, sha256 } from '../lib/crypto.js';
 import { config } from '../config.js';
+import { getSetting } from '../db/seed.js';
 
 const TOUCH_INTERVAL_MS = 5 * 60 * 1000;
+
+/** 会话时长以设置为准，非法值回退到环境变量默认 */
+function sessionTtlHours() {
+  const n = Number(getSetting('security.sessionTtlHours', config.sessionTtlHours));
+  return Number.isFinite(n) && n > 0 ? n : config.sessionTtlHours;
+}
 
 export function createSession(userId, { ip = '', ua = '' } = {}) {
   const db = getDb();
   const token = randomToken(32);
   const csrf = randomToken(24);
   const now = new Date();
-  const expires = new Date(now.getTime() + config.sessionTtlHours * 3600 * 1000);
+  const expires = new Date(now.getTime() + sessionTtlHours() * 3600 * 1000);
 
   db.run(
     `INSERT INTO sessions (id, user_id, csrf_token, ip, user_agent, created_at, last_seen_at, expires_at)
@@ -41,7 +48,7 @@ export function findSession(token) {
 export function touchSession(session) {
   const last = new Date(session.last_seen_at).getTime();
   if (Date.now() - last < TOUCH_INTERVAL_MS) return;
-  const expires = new Date(Date.now() + config.sessionTtlHours * 3600 * 1000).toISOString();
+  const expires = new Date(Date.now() + sessionTtlHours() * 3600 * 1000).toISOString();
   getDb().run('UPDATE sessions SET last_seen_at = ?, expires_at = ? WHERE id = ?', [
     nowIso(), expires, session.id,
   ]);

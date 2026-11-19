@@ -13,6 +13,7 @@ import {
 } from '../../../shared/validate.js';
 import { siteRoot, siteUser, phpSocketPath } from '../../../shared/paths.js';
 import { createTask } from './tasks.js';
+import { getSetting } from '../db/seed.js';
 import { SITE_STATUS } from '../../../shared/protocol.js';
 import { createLogger } from '../lib/logger.js';
 import { renderSiteVhost } from '../../../shared/render/nginx.js';
@@ -23,8 +24,9 @@ const log = createLogger('sites');
 const SETTING_RULES = {
   rewrite: { type: 'enum', values: ['none', 'wordpress', 'laravel', 'thinkphp', 'discuz'], default: 'none' },
   clientMaxBodySizeMb: { type: 'int', min: 1, max: 4096, default: 64 },
-  maxChildren: { type: 'int', min: 2, max: 80, default: 10 },
-  memoryLimitMb: { type: 'int', min: 32, max: 4096, default: 256 },
+  // 小内存机型默认更小的 PHP 进程池与单进程上限，避免多站点叠加后 OOM
+  maxChildren: { type: 'int', min: 2, max: 80, default: config.lowMemory ? 3 : 10 },
+  memoryLimitMb: { type: 'int', min: 32, max: 4096, default: config.lowMemory ? 128 : 256 },
   maxExecutionTime: { type: 'int', min: 10, max: 900, default: 120 },
   uploadMaxFilesizeMb: { type: 'int', min: 1, max: 2048, default: 64 },
   forceHttps: { type: 'bool', default: true },
@@ -101,10 +103,16 @@ export function listSites(query = {}) {
   }
   const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const total = Number(db.get(`SELECT COUNT(*) c FROM sites s ${clause}`, params).c);
+  // 一个站点可能有多张有效证书；用相关子查询取最新一张，避免 JOIN 产生重复行。
   const rows = db.all(
-    `SELECT s.*, c.status AS cert_status, c.not_after AS cert_not_after
+    `SELECT s.*,
+       (SELECT c.status FROM certificates c
+         WHERE c.site_id = s.id AND c.status IN ('issued','expiring')
+         ORDER BY c.id DESC LIMIT 1) AS cert_status,
+       (SELECT c.not_after FROM certificates c
+         WHERE c.site_id = s.id AND c.status IN ('issued','expiring')
+         ORDER BY c.id DESC LIMIT 1) AS cert_not_after
      FROM sites s
-     LEFT JOIN certificates c ON c.site_id = s.id AND c.status IN ('issued','expiring')
      ${clause}
      ORDER BY s.id DESC LIMIT ? OFFSET ?`,
     [...params, size, offset],
@@ -187,14 +195,21 @@ export function createSite(input, actor) {
   const name = assertString(input.name, { field: 'name', min: 1, max: 64 });
   const slug = assertSlug(input.slug || deriveSlug(name), 'slug');
   const domains = assertDomains(input.domains || input.domain, 'domains');
-  const appType = assertEnum(input.appType || 'php', ['php', 'static', 'proxy'], 'appType');
+  const appType = assertEnum(
+    input.appType || getSetting('site.defaultAppType', 'php'),
+    ['php', 'static', 'proxy'],
+    'appType',
+  );
   const phpVersion = appType === 'php'
-    ? assertPhpVersion(input.phpVersion || '8.3')
+    ? assertPhpVersion(input.phpVersion || getSetting('site.defaultPhpVersion', '8.3'))
     : null;
   const upstream = appType === 'proxy' ? assertString(input.upstream, { field: 'upstream', min: 8, max: 200 }) : null;
   const sslMode = assertEnum(input.sslMode || 'none', ['none', 'acme', 'manual'], 'sslMode');
   const remark = input.remark ? assertString(input.remark, { field: 'remark', max: 200 }) : '';
-  const settings = normalizeSettings(input.settings || {});
+  const settings = normalizeSettings({
+    rewrite: getSetting('site.defaultRewrite', 'none'),
+    ...(input.settings || {}),
+  });
 
   if (db.get('SELECT id FROM sites WHERE slug = ?', [slug])) {
     throw errors.conflict(`站点标识 ${slug} 已存在`, { field: 'slug' });
@@ -206,7 +221,7 @@ export function createSite(input, actor) {
   const rootPath = siteRoot(slug);
   const user = siteUser(slug);
 
-  const id = db.tx(() => {
+  const { id, task } = db.tx(() => {
     const res = db.run(
       `INSERT INTO sites (slug, name, domain, aliases, root_path, site_user, app_type, php_version,
         upstream, status, desired_state, ssl_mode, settings, remark, created_by, created_at, updated_at)
@@ -219,17 +234,19 @@ export function createSite(input, actor) {
       'INSERT INTO site_domains (site_id, domain, is_primary) VALUES (?, ?, ?)',
     );
     domains.forEach((d, i) => stmt.run(siteId, d, i === 0 ? 1 : 0));
-    return siteId;
-  });
 
-  const task = createTask({
-    type: 'site.create',
-    title: `创建站点 ${name}（${domains[0]}）`,
-    targetType: 'site',
-    targetId: String(id),
-    payload: { siteId: id, sslMode },
-    createdBy: actor?.id ?? null,
-    priority: 3,
+    return {
+      id: siteId,
+      task: createTask({
+        type: 'site.create',
+        title: `创建站点 ${name}（${domains[0]}）`,
+        targetType: 'site',
+        targetId: String(siteId),
+        payload: { siteId, sslMode },
+        createdBy: actor?.id ?? null,
+        priority: 3,
+      }),
+    };
   });
 
   log.info(`站点已创建 ${slug}`, { siteId: id, taskId: task.id });
@@ -329,42 +346,50 @@ export function updateSite(id, patch, actor) {
 
   fields.push('updated_at = ?', 'last_error = NULL');
   params.push(nowIso(), id);
-  db.run(`UPDATE sites SET ${fields.join(', ')} WHERE id = ?`, params);
 
-  if (domains !== current.domains) {
-    db.run('DELETE FROM site_domains WHERE site_id = ?', [id]);
-    const stmt = db.db.prepare('INSERT INTO site_domains (site_id, domain, is_primary) VALUES (?, ?, ?)');
-    domains.forEach((d, i) => stmt.run(id, d, i === 0 ? 1 : 0));
-  }
+  // 状态变更与任务入队必须原子化：任务冲突时回滚，避免站点卡在 pending。
+  return db.tx(() => {
+    db.run(`UPDATE sites SET ${fields.join(', ')} WHERE id = ?`, params);
 
-  const task = createTask({
-    type: 'site.apply',
-    title: `应用配置 ${current.name}`,
-    targetType: 'site',
-    targetId: String(id),
-    payload: { siteId: id },
-    createdBy: actor?.id ?? null,
-    priority: 4,
+    if (domains !== current.domains) {
+      db.run('DELETE FROM site_domains WHERE site_id = ?', [id]);
+      const stmt = db.db.prepare('INSERT INTO site_domains (site_id, domain, is_primary) VALUES (?, ?, ?)');
+      domains.forEach((d, i) => stmt.run(id, d, i === 0 ? 1 : 0));
+    }
+
+    const task = createTask({
+      type: 'site.apply',
+      title: `应用配置 ${current.name}`,
+      targetType: 'site',
+      targetId: String(id),
+      payload: { siteId: id },
+      createdBy: actor?.id ?? null,
+      priority: 4,
+    });
+
+    return { site: getSite(id), task };
   });
-
-  return { site: getSite(id), task };
 }
 
 export function deleteSite(id, { keepFiles = true, backup = true } = {}, actor) {
   const site = getSite(id);
   if (site.status === 'deleting') throw errors.conflict('站点正在删除中');
+  const db = getDb();
 
-  getDb().run('UPDATE sites SET status = ?, updated_at = ? WHERE id = ?', ['deleting', nowIso(), id]);
-  const task = createTask({
-    type: 'site.remove',
-    title: `删除站点 ${site.name}`,
-    targetType: 'site',
-    targetId: String(id),
-    payload: { siteId: id, keepFiles, backup, slug: site.slug },
-    createdBy: actor?.id ?? null,
-    priority: 2,
+  // 任务冲突时连同 deleting 状态一起回滚，避免站点被永久锁死。
+  return db.tx(() => {
+    db.run('UPDATE sites SET status = ?, updated_at = ? WHERE id = ?', ['deleting', nowIso(), id]);
+    const task = createTask({
+      type: 'site.remove',
+      title: `删除站点 ${site.name}`,
+      targetType: 'site',
+      targetId: String(id),
+      payload: { siteId: id, keepFiles, backup, slug: site.slug },
+      createdBy: actor?.id ?? null,
+      priority: 2,
+    });
+    return { site: getSite(id), task };
   });
-  return { site: getSite(id), task };
 }
 
 /** 组装给 agent 的站点规格（含证书信息） */

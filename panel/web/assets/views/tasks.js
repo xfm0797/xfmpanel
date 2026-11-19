@@ -101,7 +101,7 @@ function row(t) {
     </td>
     <td class="small faint nowrap">${ui.fmtDate(t.createdAt)}</td>
     <td class="small faint nowrap">${cost}</td>
-    <td class="actions">${['queued', 'running'].includes(t.status)
+    <td class="actions">${t.status === 'queued'
       ? `<button class="btn btn-sm btn-ghost" data-cancel="${ui.esc(t.id)}">取消</button>` : ''}</td>
   </tr>`;
 }

@@ -10,6 +10,7 @@ import { createTask } from '../services/tasks.js';
 import { callAgent } from '../services/agent.js';
 import { AUDIT_ACTIONS } from '../../../shared/protocol.js';
 import { errors } from '../lib/errors.js';
+import { getSetting } from '../db/seed.js';
 import { assertInt } from '../../../shared/validate.js';
 
 export function registerSiteRoutes(app) {
@@ -54,7 +55,9 @@ export function registerSiteRoutes(app) {
   app.delete('/api/v1/sites/:id', perm('site:delete'), async (ctx) => {
     const id = assertInt(ctx.params.id, { field: 'id', min: 1 });
     const keepFiles = ctx.query.keepFiles !== '0';
-    const backup = ctx.query.backup !== '0';
+    // 未显式传参时使用系统设置，显式 ?backup=0 仍然优先
+    const backupDefault = String(getSetting('ops.backupBeforeDelete', 'true')).toLowerCase() !== 'false';
+    const backup = ctx.query.backup === undefined ? backupDefault : ctx.query.backup !== '0';
     const result = deleteSite(id, { keepFiles, backup }, ctx.user);
     ctx.audit(AUDIT_ACTIONS.SITE_DELETE, {
       resource: 'site',

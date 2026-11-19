@@ -27,6 +27,7 @@ const DEFAULT_SETTINGS = {
   'security.sessionTtlHours': '12',
   'security.loginMaxAttempts': '5',
   'ops.taskRetentionDays': '30',
+  'ops.backupRetentionDays': '30',
   'ops.backupBeforeDelete': 'true',
   'notify.webhookUrl': '',
 };

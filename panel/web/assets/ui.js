@@ -245,9 +245,11 @@ export function openTaskDrawer(task, { onFinished } = {}) {
     title: task.title || '任务',
     subtitle: `任务 ID：<code>${esc(task.id)}</code>`,
     body,
-    footer: task.status === 'queued' || task.status === 'running'
+    footer: task.status === 'queued'
       ? '<button class="btn btn-ghost" data-role="cancel">取消任务</button><button class="btn" data-close>后台运行</button>'
-      : '<button class="btn" data-close>关闭</button>',
+      : task.status === 'running'
+        ? '<span class="small faint" style="margin-right:auto">任务执行中，暂不支持取消</span><button class="btn" data-close>后台运行</button>'
+        : '<button class="btn" data-close>关闭</button>',
   });
 
   const logEl = drawer.node.querySelector('[data-role="log"]');

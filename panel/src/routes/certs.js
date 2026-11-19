@@ -60,6 +60,7 @@ export function registerCertRoutes(app) {
       domain: ctx.body?.domain,
       certPem: String(ctx.body?.certPem || ''),
       keyPem: String(ctx.body?.keyPem || ''),
+      chainPem: String(ctx.body?.chainPem || ''),
     }, ctx.user);
     ctx.audit(AUDIT_ACTIONS.CERT_UPLOAD, {
       resource: 'cert',

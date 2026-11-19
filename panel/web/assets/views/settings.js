@@ -25,6 +25,14 @@ export async function render(el, ctx) {
           <div class="help">用于生成通知链接；留空则使用当前访问地址</div></div>
         <div class="field"><label>任务日志保留天数</label>
           <input class="input" type="number" min="1" max="365" data-k="ops.taskRetentionDays" value="${ui.esc(s['ops.taskRetentionDays'] || '30')}" ${disabled} /></div>
+        <div class="field"><label>备份保留天数</label>
+          <input class="input" type="number" min="1" max="3650" data-k="ops.backupRetentionDays" value="${ui.esc(s['ops.backupRetentionDays'] || '30')}" ${disabled} /></div>
+        <div class="row">
+          <div class="field"><label>登录会话有效期（小时）</label>
+            <input class="input" type="number" min="1" max="168" data-k="security.sessionTtlHours" value="${ui.esc(s['security.sessionTtlHours'] || '12')}" ${disabled} /></div>
+          <div class="field"><label>登录失败锁定阈值（次）</label>
+            <input class="input" type="number" min="1" max="20" data-k="security.loginMaxAttempts" value="${ui.esc(s['security.loginMaxAttempts'] || '5')}" ${disabled} /></div>
+        </div>
         <div class="check"><input type="checkbox" id="bk" data-k="ops.backupBeforeDelete" data-type="bool"
           ${s['ops.backupBeforeDelete'] === 'true' ? 'checked' : ''} ${disabled} />
           <label for="bk">删除站点前自动备份（推荐）</label></div>
@@ -69,7 +77,7 @@ export async function render(el, ctx) {
         <div class="card-head"><h2>通知与路径</h2></div>
         <div class="field"><label>Webhook 地址（可选）</label>
           <input class="input" data-k="notify.webhookUrl" placeholder="https://hooks.example.com/xxx" value="${ui.esc(s['notify.webhookUrl'] || '')}" ${disabled} />
-          <div class="help">严重告警会向该地址 POST JSON，可接入企业微信/飞书机器人</div></div>
+          <div class="help">新增告警会向该地址 POST JSON，可接入企业微信/飞书机器人</div></div>
         <dl class="kv">
           <dt>数据库</dt><dd>${ui.esc(paths.config?.dbPath || '')}</dd>
           <dt>日志目录</dt><dd>${ui.esc(paths.config?.logDir || '')}</dd>

@@ -45,7 +45,7 @@ export async function render(el, ctx) {
             </td>
             <td class="small">${c.autoRenew ? '<span class="badge ok">开启</span>' : '<span class="badge muted">关闭</span>'}</td>
             <td class="actions">
-              ${canWrite ? `<button class="btn btn-sm" data-renew="${c.id}">续期</button>
+              ${canWrite ? `${c.provider === 'acme' ? `<button class="btn btn-sm" data-renew="${c.id}">续期</button>` : ''}
               <button class="btn btn-sm btn-ghost" data-revoke="${c.id}">吊销</button>` : ''}
             </td>
           </tr>`).join('')}</tbody>
@@ -171,10 +171,11 @@ function openUpload(sites, ctx) {
             `<option value="${s.id}">${ui.esc(s.name)}（${ui.esc(s.domain)}）</option>`).join('')}</select></div>
         <div class="field"><label>域名</label><input class="input" data-f="domain" value="${ui.esc(sites[0].domain)}" /></div>
       </div>
-      <div class="field"><label>证书（PEM，含完整链）</label><textarea class="textarea" data-f="cert" placeholder="-----BEGIN CERTIFICATE-----"></textarea></div>
+      <div class="field"><label>证书（PEM，叶子证书）</label><textarea class="textarea" data-f="cert" placeholder="-----BEGIN CERTIFICATE-----"></textarea></div>
+      <div class="field"><label>中间证书链（PEM，可选）</label><textarea class="textarea" data-f="chain" placeholder="-----BEGIN CERTIFICATE-----"></textarea></div>
       <div class="field"><label>私钥（PEM）</label><textarea class="textarea" data-f="key" placeholder="-----BEGIN PRIVATE KEY-----"></textarea></div>
       <div class="small" data-role="msg" style="min-height:18px;color:var(--danger)"></div>
-      <div class="small faint">agent 会校验证书与私钥是否匹配、是否过期，私钥以 0600 权限落盘。</div>
+      <div class="small faint">agent 会校验证书是否覆盖目标域名、与私钥是否匹配、是否过期；私钥以 0600 权限落盘。</div>
     `,
     footer: '<button class="btn btn-ghost" data-close>取消</button><button class="btn btn-primary" data-role="ok">上传并部署</button>',
     width: 620,
@@ -187,6 +188,7 @@ function openUpload(sites, ctx) {
           siteId: Number(node.querySelector('[data-f="site"]').value),
           domain: node.querySelector('[data-f="domain"]').value.trim(),
           certPem: node.querySelector('[data-f="cert"]').value.trim(),
+          chainPem: node.querySelector('[data-f="chain"]').value.trim(),
           keyPem: node.querySelector('[data-f="key"]').value.trim(),
         },
       });

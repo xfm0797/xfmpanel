@@ -19,3 +19,4 @@ Thumbs.db
 # 构建产物
 dist/
 *.tgz
+/dist/

@@ -15,12 +15,12 @@ import { TASK_LABELS, TASK_STATUS } from '../../../shared/protocol.js';
 import { errors } from '../lib/errors.js';
 import { handlers } from './handlers.js';
 import { config } from '../config.js';
+import { getSetting } from '../db/seed.js';
 
 const log = createLogger('tasks');
 
 const listeners = new Map(); // taskId -> Set<fn>
 const seqs = new Map(); // taskId -> last seq
-const cancelFlags = new Map(); // taskId -> {aborted:boolean}
 const running = new Set();
 
 export function onTaskEvent(taskId, fn) {
@@ -158,17 +158,80 @@ export function createTask({
 export function cancelTask(id, actor) {
   const task = getTask(id);
   if (!task) throw errors.notFound('任务不存在');
-  if (!['queued', 'running'].includes(task.status)) {
-    throw errors.conflict('任务已结束，无法取消');
+  if (task.status !== 'queued') {
+    // 运行中的任务往往正在执行 apt / certbot 等不可安全中断的特权操作，
+    // 这里只允许取消尚未开始的任务，避免“面板显示已取消、agent 仍在改系统”。
+    throw errors.conflict(
+      task.status === 'running'
+        ? '任务已开始执行，无法取消，请等待完成'
+        : '任务已结束，无法取消',
+    );
   }
-  getDb().run('UPDATE tasks SET status = ?, finished_at = ?, error = ? WHERE id = ?', [
-    'canceled', nowIso(), '用户取消', id,
-  ]);
-  const flag = cancelFlags.get(id);
-  if (flag) flag.aborted = true;
+  const db = getDb();
+  db.tx(() => {
+    const res = db.run(
+      "UPDATE tasks SET status = 'canceled', finished_at = ?, error = ? WHERE id = ? AND status = 'queued'",
+      [nowIso(), '用户取消', id],
+    );
+    if (Number(res.changes) !== 1) {
+      throw errors.conflict('任务已开始执行，无法取消，请等待完成');
+    }
+    rollbackCanceledTask(task);
+  });
   pushEvent(task, 'warn', `任务被 ${actor?.username || 'system'} 取消`);
   notifyFinished(id);
   return getTask(id);
+}
+
+/** 取消排队任务后，把尚未被 agent 修改的对象恢复到一致状态 */
+function rollbackCanceledTask(task) {
+  const db = getDb();
+  const now = nowIso();
+  const payload = task.payload && typeof task.payload === 'object' ? task.payload : {};
+  switch (task.type) {
+    case 'site.create':
+    case 'site.apply': {
+      const siteId = payload.siteId ?? Number(task.targetId);
+      db.run(
+        "UPDATE sites SET status = 'error', last_error = ?, updated_at = ? WHERE id = ?",
+        ['任务已取消，配置可能未生效，请重新应用', now, siteId],
+      );
+      break;
+    }
+    case 'site.remove': {
+      const siteId = payload.siteId ?? Number(task.targetId);
+      // 删除任务未执行，站点仍保持取消前的期望状态。
+      db.run(
+        `UPDATE sites SET status = CASE WHEN desired_state = 'stopped' THEN 'stopped' ELSE 'active' END,
+           last_error = NULL, updated_at = ? WHERE id = ?`,
+        [now, siteId],
+      );
+      break;
+    }
+    case 'runtime.install': {
+      db.run(
+        "UPDATE runtimes SET status = 'failed', last_error = ?, updated_at = ? WHERE kind = ? AND version = ?",
+        ['安装已取消', now, payload.kind, payload.version],
+      );
+      break;
+    }
+    case 'runtime.remove': {
+      db.run('UPDATE runtimes SET last_error = ?, updated_at = ? WHERE id = ?', [
+        '卸载已取消', now, payload.runtimeId ?? Number(task.targetId),
+      ]);
+      break;
+    }
+    case 'cert.issue':
+    case 'cert.upload': {
+      db.run(
+        "UPDATE certificates SET status = 'failed', last_error = ?, updated_at = ? WHERE id = ?",
+        ['任务已取消', now, payload.certId],
+      );
+      break;
+    }
+    default:
+      break;
+  }
 }
 
 function notifyFinished(taskId) {
@@ -178,7 +241,6 @@ function notifyFinished(taskId) {
   setTimeout(() => {
     listeners.delete(taskId);
     seqs.delete(taskId);
-    cancelFlags.delete(taskId);
   }, 60_000).unref?.();
 }
 
@@ -191,38 +253,25 @@ async function executeTask(task) {
       getDb().run('UPDATE tasks SET progress = ? WHERE id = ?', [value, task.id]);
       pushEvent(task, 'info', msg ? `[${value}%] ${msg}` : `进度 ${value}%`);
     },
-    canceled: () => cancelFlags.get(task.id)?.aborted === true,
     signal: null,
   };
-  const controller = new AbortController();
-  ctx.signal = controller.signal;
-  const flag = { aborted: false, controller };
-  cancelFlags.set(task.id, flag);
-
-  const timer = setInterval(() => {
-    if (flag.aborted) controller.abort();
-  }, 500);
-  timer.unref?.();
 
   try {
     pushEvent(task, 'info', `任务开始：${task.title}`);
     const result = await handlers[task.type](ctx);
-    if (flag.aborted) throw Object.assign(new Error('任务已取消'), { canceled: true });
     getDb().run(
       'UPDATE tasks SET status = ?, progress = 100, result = ?, finished_at = ? WHERE id = ?',
       ['success', JSON.stringify(result ?? null), nowIso(), task.id],
     );
     pushEvent(task, 'success', '任务完成');
   } catch (err) {
-    const canceled = flag.aborted || err?.canceled;
     getDb().run(
       'UPDATE tasks SET status = ?, error = ?, finished_at = ? WHERE id = ?',
-      [canceled ? 'canceled' : 'failed', String(err.message || err).slice(0, 2000), nowIso(), task.id],
+      ['failed', String(err.message || err).slice(0, 2000), nowIso(), task.id],
     );
     pushEvent(task, 'error', `任务失败：${err.message || err}`);
     log.error(`任务 ${task.id} (${task.type}) 失败`, { message: err.message, stack: err.stack });
   } finally {
-    clearInterval(timer);
     running.delete(task.id);
     notifyFinished(task.id);
   }
@@ -264,6 +313,35 @@ export function startWorker() {
     log.warn(`有 ${stale.changes} 个任务因面板重启被标记为失败`);
   }
 
+  // 任务中断后，对象可能停留在中间态；没有待执行任务时统一迁到可重试状态。
+  const staleRuntimes = db.run(
+    `UPDATE runtimes SET status = 'failed', last_error = ?, updated_at = ?
+     WHERE status = 'installing'
+       AND NOT EXISTS (
+         SELECT 1 FROM tasks
+         WHERE tasks.status = 'queued' AND tasks.type = 'runtime.install'
+           AND json_extract(tasks.payload, '$.kind') = runtimes.kind
+           AND json_extract(tasks.payload, '$.version') = runtimes.version
+       )`,
+    ['面板重启导致安装中断，请重试', nowIso()],
+  );
+  const staleSites = db.run(
+    `UPDATE sites SET status = 'error', last_error = ?, updated_at = ?
+     WHERE status IN ('pending', 'deleting')
+       AND NOT EXISTS (
+         SELECT 1 FROM tasks
+         WHERE tasks.status = 'queued' AND tasks.target_type = 'site'
+           AND tasks.target_id = CAST(sites.id AS TEXT)
+       )`,
+    ['面板重启导致操作中断，请重试', nowIso()],
+  );
+  if (Number(staleRuntimes.changes) > 0) {
+    log.warn(`有 ${staleRuntimes.changes} 个运行时因面板重启被标记为失败`);
+  }
+  if (Number(staleSites.changes) > 0) {
+    log.warn(`有 ${staleSites.changes} 个站点因面板重启被标记为异常`);
+  }
+
   timer = setInterval(() => {
     try { tick(); } catch (err) { log.error('任务调度异常', { message: err.message }); }
   }, config.taskPollMs);
@@ -279,11 +357,16 @@ export function stopWorker() {
 
 /** 清理历史任务与事件，避免 SQLite 无限膨胀 */
 export function cleanupOldTasks() {
-  const cutoff = new Date(Date.now() - config.taskRetentionDays * 86400 * 1000).toISOString();
-  const res = getDb().run(
+  const settingDays = Number(getSetting('ops.taskRetentionDays', config.taskRetentionDays));
+  const days = Number.isFinite(settingDays) && settingDays > 0 ? settingDays : config.taskRetentionDays;
+  const cutoff = new Date(Date.now() - days * 86400 * 1000).toISOString();
+  const db = getDb();
+  const res = db.run(
     "DELETE FROM tasks WHERE created_at < ? AND status IN ('success','failed','canceled')",
     [cutoff],
   );
+  // 同步清理失去宿主任务的孤立事件，避免 task_events 无限增长
+  db.run('DELETE FROM task_events WHERE task_id NOT IN (SELECT id FROM tasks)');
   return res.changes;
 }
 

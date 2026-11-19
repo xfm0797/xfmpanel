@@ -9,6 +9,7 @@
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { run, runCapture } from '../lib/exec.js';
 import {
@@ -18,9 +19,13 @@ import {
 import { PATHS, siteRoot, siteLogDir, phpSocketPath, phpPoolPath } from '../../../shared/paths.js';
 import { renderSiteVhost } from '../../../shared/render/nginx.js';
 import { renderPhpPool } from '../../../shared/render/php-pool.js';
-import { s, arr, oneOf, bool, absPath, obj, SLUG_RE, DOMAIN_RE, USER_RE } from './args.js';
+import {
+  s, n, arr, oneOf, bool, absPath, obj, ArgError, SLUG_RE, DOMAIN_RE, USER_RE,
+} from './args.js';
 
 const CERT_PREFIXES = ['/etc/letsencrypt/live', '/etc/letsencrypt/archive', PATHS.CERT_ROOT];
+// 1C512M / 1G 小内存机型：设置缺省时使用保守的 PHP 进程池参数
+const TINY_HOST = os.totalmem() <= 1280 * 1024 * 1024;
 
 function validateSsl(ssl, field) {
   if (!ssl || typeof ssl !== 'object') return { enabled: false };
@@ -44,8 +49,8 @@ function validateSettings(input = {}) {
   return {
     rewrite: ['none', 'wordpress', 'laravel', 'thinkphp', 'discuz'].includes(raw.rewrite) ? raw.rewrite : 'none',
     clientMaxBodySizeMb: num(raw.clientMaxBodySizeMb, 64, 1, 4096),
-    maxChildren: num(raw.maxChildren, 10, 2, 80),
-    memoryLimitMb: num(raw.memoryLimitMb, 256, 32, 4096),
+    maxChildren: num(raw.maxChildren, TINY_HOST ? 3 : 10, 2, 80),
+    memoryLimitMb: num(raw.memoryLimitMb, TINY_HOST ? 128 : 256, 32, 4096),
     maxExecutionTime: num(raw.maxExecutionTime, 120, 10, 900),
     uploadMaxFilesizeMb: num(raw.uploadMaxFilesizeMb, 64, 1, 2048),
     forceHttps: raw.forceHttps === undefined ? true : Boolean(raw.forceHttps),
@@ -288,11 +293,20 @@ export const siteOps = {
   },
 
   'site.remove': {
-    validate: (args) => ({
-      slug: s(args.slug, { field: 'slug', max: 32, pattern: SLUG_RE }),
-      siteUser: s(args.siteUser, { field: 'siteUser', max: 32, pattern: USER_RE }),
-      keepFiles: args.keepFiles === undefined ? true : Boolean(args.keepFiles),
-    }),
+    validate: (args) => {
+      const slug = s(args.slug, { field: 'slug', max: 32, pattern: SLUG_RE });
+      const siteUser = s(args.siteUser, { field: 'siteUser', max: 32, pattern: USER_RE });
+      // 必须与 site.apply 的约定一致：只允许删除该站点自己的系统用户，
+      // 避免面板被攻破后传入 root / www-data 等账号造成系统级破坏。
+      if (siteUser !== `xfm_${slug}`.slice(0, 32)) {
+        throw new ArgError('站点系统用户必须为 xfm_<slug>');
+      }
+      return {
+        slug,
+        siteUser,
+        keepFiles: args.keepFiles === undefined ? true : Boolean(args.keepFiles),
+      };
+    },
     run: async ({ slug, siteUser, keepFiles }, emit) => {
       const layout = nginxLayout();
       const vhostPath = path.join(layout.available, `xfm-${slug}.conf`);
@@ -362,6 +376,36 @@ export const siteOps = {
       const st = fs.statSync(file);
       emit.log('info', `备份完成，大小 ${(st.size / 1048576).toFixed(1)}MB`);
       return { path: file, sizeBytes: st.size };
+    },
+  },
+
+  'site.backup.prune': {
+    validate: (args) => ({
+      keepDays: Math.floor(n(args.keepDays ?? 30, { field: 'keepDays', min: 1, max: 3650 })),
+    }),
+    run: async ({ keepDays }, emit) => {
+      const dir = PATHS.BACKUP_ROOT;
+      if (!fs.existsSync(dir)) return { scanned: 0, deleted: [], freedBytes: 0 };
+      const cutoff = Date.now() - keepDays * 86400 * 1000;
+      let scanned = 0;
+      let freedBytes = 0;
+      const deleted = [];
+      for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+        // 只处理备份目录顶层的普通备份文件，不跟随符号链接、不递归
+        if (!ent.isFile() || !ent.name.endsWith('.tar.gz')) continue;
+        scanned += 1;
+        const file = path.join(dir, ent.name);
+        assertWithin(dir, file);
+        const st = fs.statSync(file);
+        if (st.mtimeMs >= cutoff) continue;
+        fs.unlinkSync(file);
+        freedBytes += st.size;
+        deleted.push(file);
+      }
+      if (deleted.length) {
+        emit.log('info', `已清理 ${deleted.length} 个过期备份，释放 ${(freedBytes / 1048576).toFixed(1)}MB`);
+      }
+      return { scanned, deleted, freedBytes };
     },
   },
 

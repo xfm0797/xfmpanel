@@ -250,6 +250,24 @@ export async function stubCall(op, args = {}, { onLog, onProgress } = {}) {
       return { path: file, sizeBytes: size };
     }
 
+    case 'site.backup.prune': {
+      const dir = path.join(config.dataDir, 'backups');
+      if (!fs.existsSync(dir)) return { scanned: 0, deleted: [], freedBytes: 0 };
+      const cutoff = Date.now() - (Number(args.keepDays) || 30) * 86400 * 1000;
+      const deleted = [];
+      let freedBytes = 0;
+      for (const name of fs.readdirSync(dir)) {
+        if (!name.endsWith('.tar.gz')) continue;
+        const file = path.join(dir, name);
+        const st = fs.statSync(file);
+        if (st.mtimeMs >= cutoff) continue;
+        fs.unlinkSync(file);
+        deleted.push(file);
+        freedBytes += st.size;
+      }
+      return { scanned: deleted.length, deleted, freedBytes };
+    }
+
     case 'site.log.tail': {
       const now = Date.now();
       const lines = Array.from({ length: Math.min(args.lines || 50, 100) }, (_, i) => {

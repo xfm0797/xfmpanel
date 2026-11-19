@@ -28,16 +28,29 @@ export function openDatabase({ file = config.dbPath, verbose = false } = {}) {
 
   migrate(db, { log: verbose ? (m) => console.log(m) : () => {} });
 
+  // 常用 SQL 的 statement 缓存：避免每次查询都重新编译。
+  const stmts = new Map();
+  const MAX_STMTS = 256;
+  const stmt = (sql) => {
+    let s = stmts.get(sql);
+    if (s) return s;
+    s = db.prepare(sql);
+    if (stmts.size >= MAX_STMTS) stmts.clear();
+    stmts.set(sql, s);
+    return s;
+  };
+
   instance = {
     db,
     file,
     close: () => {
+      stmts.clear();
       try { db.close(); } catch { /* ignore */ }
       instance = null;
     },
-    all: (sql, params = []) => db.prepare(sql).all(...params),
-    get: (sql, params = []) => db.prepare(sql).get(...params),
-    run: (sql, params = []) => db.prepare(sql).run(...params),
+    all: (sql, params = []) => stmt(sql).all(...params),
+    get: (sql, params = []) => stmt(sql).get(...params),
+    run: (sql, params = []) => stmt(sql).run(...params),
     exec: (sql) => db.exec(sql),
     /** 事务包装：回调抛错自动回滚 */
     tx: (fn) => {

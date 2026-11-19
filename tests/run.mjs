@@ -12,6 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { assertDomain } from '../shared/validate.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BASE = process.env.XFMP_BASE || 'http://127.0.0.1:8787';
@@ -87,6 +88,7 @@ async function main() {
   const health = await api('/api/v1/system/health');
   ok('健康检查返回 ok', health.status === 200 && health.json?.data?.panel === 'ok');
   ok('agent 在线', health.json?.data?.agent?.ok === true, health.json?.data?.agent?.error);
+  ok('中文域名统一转为 punycode', assertDomain('例子.中国') === 'xn--fsqu00a.xn--fiqs8s');
 
   const anon = await api('/api/v1/sites');
   ok('未登录访问站点列表返回 401', anon.status === 401, `实际 ${anon.status}`);
@@ -170,6 +172,7 @@ async function main() {
   const vhost = cfg.json?.data?.vhost || '';
   ok('配置预览包含 server_name', vhost.includes(`server_name ${slug}.example.com`));
   ok('配置预览包含 443 监听', vhost.includes('listen 443 ssl'));
+  ok('443 监听兼容 nginx 1.22', vhost.includes('listen 443 ssl http2') && !vhost.includes('http2 on'));
   ok('PHP pool 锁定 open_basedir', (cfg.json?.data?.pool || '').includes('open_basedir'));
 
   console.log('\n[4] 站点停用 / 启用 / 重载');
@@ -197,6 +200,17 @@ async function main() {
     const renewTask = await waitTask(renew.json.data.task.id);
     ok('证书续期任务成功', renewTask.status === 'success', renewTask.error);
   }
+
+  const foreign = await api('/api/v1/certificates/upload', {
+    method: 'POST',
+    body: {
+      siteId,
+      domain: 'not-this-site.example',
+      certPem: `-----BEGIN CERTIFICATE-----\n${'A'.repeat(120)}\n-----END CERTIFICATE-----`,
+      keyPem: `-----BEGIN PRIVATE KEY-----\n${'A'.repeat(120)}\n-----END PRIVATE KEY-----`,
+    },
+  });
+  ok('非本站域名的上传证书被拒绝', foreign.status === 422, JSON.stringify(foreign.json));
 
   const badSite = await api('/api/v1/sites', {
     method: 'POST',
@@ -236,7 +250,27 @@ async function main() {
     typeof m?.current?.net?.rxBps === 'number');
   ok('指标返回时间序列', Array.isArray(m?.series));
 
-  console.log('\n[7] 删除站点（先备份）');
+  console.log('\n[7] 设置项与静态缓存');
+  const home = await fetch(`${BASE}/`);
+  const etag = home.headers.get('etag');
+  ok('首页返回 ETag', Boolean(etag));
+  const cached = await fetch(`${BASE}/`, { headers: { 'If-None-Match': etag } });
+  ok('静态资源命中 ETag 返回 304', cached.status === 304, `实际 ${cached.status}`);
+
+  const disableAuto = await api('/api/v1/settings', {
+    method: 'PATCH', body: { 'cert.autoRenew': 'false' },
+  });
+  ok('设置可关闭自动续期', disableAuto.status === 200);
+  const scan = await api('/api/v1/certificates/scan', { method: 'POST' });
+  ok('关闭自动续期后巡检不入队', scan.json?.data?.disabled === true, JSON.stringify(scan.json?.data));
+  await api('/api/v1/settings', { method: 'PATCH', body: { 'cert.autoRenew': 'true' } });
+
+  const badSetting = await api('/api/v1/settings', {
+    method: 'PATCH', body: { 'security.loginMaxAttempts': '0' },
+  });
+  ok('非法登录锁定阈值被拒绝', badSetting.status === 422, `实际 ${badSetting.status}`);
+
+  console.log('\n[8] 删除站点（先备份）');
   const del = await api(`/api/v1/sites/${siteId}?keepFiles=1&backup=1`, { method: 'DELETE' });
   ok('删除请求被接受', del.status === 200, JSON.stringify(del.json));
   const delTask = await waitTask(del.json.data.task.id, { verbose: true });

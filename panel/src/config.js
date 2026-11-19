@@ -45,10 +45,13 @@ function int(key, fallback) {
 }
 
 const devDataDir = path.join(REPO_ROOT, 'data');
+// 1C512M 等小内存机型：安装脚本会写入 XFMP_LOW_MEMORY=1
+const lowMemory = bool('XFMP_LOW_MEMORY', false);
 
 export const config = Object.freeze({
   env: isDev ? 'dev' : 'prod',
   isDev,
+  lowMemory,
 
   // HTTP
   bind: env('XFMP_BIND', '127.0.0.1'),
@@ -57,7 +60,9 @@ export const config = Object.freeze({
   // 安装脚本探测到的公网地址（IPv6 不带方括号），用于登录页/概览展示
   publicIpv4: env('XFMP_PUBLIC_IPV4', ''),
   publicIpv6: env('XFMP_PUBLIC_IPV6', ''),
-  trustProxy: bool('XFMP_TRUST_PROXY', !isDev),
+  // 默认不信任 X-Forwarded-For：直连部署下伪造该头可绕过限流/污染审计 IP。
+  // 仅在明确部署在可信反代之后时通过 XFMP_TRUST_PROXY=1 显式开启。
+  trustProxy: bool('XFMP_TRUST_PROXY', false),
   cookieSecure: env('XFMP_COOKIE_SECURE', 'auto'), // auto | 1 | 0
   sessionTtlHours: int('XFMP_SESSION_TTL_HOURS', 12),
   bodyLimitBytes: int('XFMP_BODY_LIMIT', 1024 * 1024),
@@ -82,9 +87,12 @@ export const config = Object.freeze({
   rateLimitPerMinute: int('XFMP_RATE_LIMIT', 240),
 
   // 任务
-  taskConcurrency: int('XFMP_TASK_CONCURRENCY', 2),
+  taskConcurrency: int('XFMP_TASK_CONCURRENCY', lowMemory ? 1 : 2),
   taskPollMs: int('XFMP_TASK_POLL_MS', 1000),
   taskRetentionDays: int('XFMP_TASK_RETENTION_DAYS', 30),
+  backupRetentionDays: int('XFMP_BACKUP_RETENTION_DAYS', 30),
+  certCheckRetentionDays: int('XFMP_CERT_CHECK_RETENTION_DAYS', 90),
+  auditRetentionDays: int('XFMP_AUDIT_RETENTION_DAYS', 180),
 
   // 证书巡检
   certCheckIntervalMs: int('XFMP_CERT_CHECK_INTERVAL_MS', 6 * 60 * 60 * 1000),

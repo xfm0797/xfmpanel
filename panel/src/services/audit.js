@@ -3,6 +3,7 @@
  */
 
 import { getDb, nowIso } from '../db/index.js';
+import { config } from '../config.js';
 import { createLogger } from '../lib/logger.js';
 
 const log = createLogger('audit');
@@ -29,6 +30,12 @@ export function record({ actor, action, resource, resourceId, detail, result = '
     // 审计写入失败不能阻塞业务，但必须留下痕迹
     log.error('审计日志写入失败', { message: err.message, action });
   }
+}
+
+/** 按保留期清理审计日志，避免 SQLite 无限膨胀 */
+export function cleanupAuditLogs() {
+  const cutoff = new Date(Date.now() - config.auditRetentionDays * 86400 * 1000).toISOString();
+  return getDb().run('DELETE FROM audit_logs WHERE at < ?', [cutoff]).changes;
 }
 
 /** 供路由层便捷调用：ctx.audit('site.create', {...}) */

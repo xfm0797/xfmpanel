@@ -70,26 +70,30 @@ export function installRuntime({ kind, version }, actor) {
   }
 
   const now = nowIso();
-  if (existing) {
-    db.run('UPDATE runtimes SET status = ?, last_error = NULL, updated_at = ? WHERE id = ?', [
-      'installing', now, existing.id,
-    ]);
-  } else {
-    db.run(
-      `INSERT INTO runtimes (kind, version, status, service_name, created_at, updated_at)
-       VALUES (?, ?, 'installing', ?, ?, ?)`,
-      [kind, String(version), serviceNameFor(kind, version), now, now],
-    );
-  }
 
-  const task = createTask({
-    type: 'runtime.install',
-    title: `安装 ${item.label} ${version}`,
-    targetType: 'runtime',
-    targetId: `${kind}:${version}`,
-    payload: { kind, version: String(version) },
-    createdBy: actor?.id ?? null,
-    priority: 1,
+  // 状态与任务入队原子化：任务冲突时回滚，避免永久卡在 installing。
+  const task = db.tx(() => {
+    if (existing) {
+      db.run('UPDATE runtimes SET status = ?, last_error = NULL, updated_at = ? WHERE id = ?', [
+        'installing', now, existing.id,
+      ]);
+    } else {
+      db.run(
+        `INSERT INTO runtimes (kind, version, status, service_name, created_at, updated_at)
+         VALUES (?, ?, 'installing', ?, ?, ?)`,
+        [kind, String(version), serviceNameFor(kind, version), now, now],
+      );
+    }
+
+    return createTask({
+      type: 'runtime.install',
+      title: `安装 ${item.label} ${version}`,
+      targetType: 'runtime',
+      targetId: `${kind}:${version}`,
+      payload: { kind, version: String(version) },
+      createdBy: actor?.id ?? null,
+      priority: 1,
+    });
   });
 
   log.info(`开始安装 ${kind} ${version}`, { taskId: task.id });
@@ -109,15 +113,18 @@ export function removeRuntime(id, actor) {
     if (used > 0) throw errors.conflict(`仍有 ${used} 个站点使用 PHP ${row.version}，请先切换版本`);
   }
 
-  getDb().run('UPDATE runtimes SET status = ?, updated_at = ? WHERE id = ?', ['failed', nowIso(), id]);
-  const task = createTask({
-    type: 'runtime.remove',
-    title: `卸载 ${CATALOG[row.kind]?.label || row.kind} ${row.version}`,
-    targetType: 'runtime',
-    targetId: String(id),
-    payload: { runtimeId: id, kind: row.kind, version: row.version, serviceName: row.service_name },
-    createdBy: actor?.id ?? null,
-    priority: 2,
+  const db = getDb();
+  const task = db.tx(() => {
+    db.run('UPDATE runtimes SET status = ?, updated_at = ? WHERE id = ?', ['failed', nowIso(), id]);
+    return createTask({
+      type: 'runtime.remove',
+      title: `卸载 ${CATALOG[row.kind]?.label || row.kind} ${row.version}`,
+      targetType: 'runtime',
+      targetId: String(id),
+      payload: { runtimeId: id, kind: row.kind, version: row.version, serviceName: row.service_name },
+      createdBy: actor?.id ?? null,
+      priority: 2,
+    });
   });
   return { task };
 }

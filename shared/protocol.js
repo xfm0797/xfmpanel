@@ -37,6 +37,7 @@ export const AGENT_OPS = Object.freeze({
   SITE_PROVISION: 'site.provision',
   SITE_REMOVE: 'site.remove',
   SITE_BACKUP: 'site.backup',
+  BACKUP_PRUNE: 'site.backup.prune',
   SITE_LOG_TAIL: 'site.log.tail',
   SITE_USAGE: 'site.usage',
   CERT_ISSUE: 'cert.issue',

@@ -19,7 +19,9 @@ const SCHEMA = {
   'cert.autoRenew': { type: 'bool' },
   'cert.renewBeforeDays': { type: 'int', min: 7, max: 60 },
   'security.sessionTtlHours': { type: 'int', min: 1, max: 168 },
+  'security.loginMaxAttempts': { type: 'int', min: 1, max: 20 },
   'ops.taskRetentionDays': { type: 'int', min: 1, max: 365 },
+  'ops.backupRetentionDays': { type: 'int', min: 1, max: 3650 },
   'ops.backupBeforeDelete': { type: 'bool' },
   'notify.webhookUrl': { type: 'url', optional: true },
 };

@@ -3,8 +3,8 @@
  *
  * 防暴力破解采取三层：
  *   1) 全局 IP 限流（security.rateLimit）
- *   2) login_throttle 表：按 IP 与用户名分别计数，超阈值锁定 15 分钟
- *   3) 用户维度 failed_attempts，跨 IP 也生效
+ *   2) login_throttle 表：按 IP 与“IP+用户名”计数，超阈值锁定 15 分钟
+ *   3) 连续失败渐进延迟；用户维度只记 failed_attempts 供审计，不做账号硬锁
  */
 
 import { getDb, nowIso } from '../db/index.js';
@@ -15,7 +15,7 @@ import { verifyPassword } from '../lib/crypto.js';
 import { errors, HttpError } from '../lib/errors.js';
 import { requireLogin } from '../http/security.js';
 import { config, isHttpsRequest } from '../config.js';
-import { getSettings } from '../db/seed.js';
+import { getSetting, getSettings } from '../db/seed.js';
 import { AUDIT_ACTIONS } from '../../../shared/protocol.js';
 import { assertString } from '../../../shared/validate.js';
 import { createLogger } from '../lib/logger.js';
@@ -23,26 +23,38 @@ import { createLogger } from '../lib/logger.js';
 const log = createLogger('auth');
 
 function throttleKeys(ip, username) {
-  return [`ip:${ip}`, `user:${username}`];
+  // 只按“IP”和“IP+用户名”计数：不再按用户名全局计数，
+  // 避免攻击者用少量错误密码把管理员账号硬锁 15 分钟（拒绝服务）。
+  return [`ip:${ip}`, `pair:${username}@${ip}`];
 }
 
-function checkThrottle(keys) {
+async function checkThrottle(keys) {
   const db = getDb();
   const now = Date.now();
+  let maxCount = 0;
   for (const key of keys) {
     const row = db.get('SELECT * FROM login_throttle WHERE key = ?', [key]);
-    if (row?.blocked_until && new Date(row.blocked_until).getTime() > now) {
+    if (!row) continue;
+    if (row.blocked_until && new Date(row.blocked_until).getTime() > now) {
       const mins = Math.ceil((new Date(row.blocked_until).getTime() - now) / 60000);
       throw new HttpError('ACCOUNT_LOCKED', {
         message: `尝试次数过多，请 ${mins} 分钟后再试`,
       });
     }
+    maxCount = Math.max(maxCount, Number(row.count) || 0);
+  }
+  // 渐进延迟：连续失败时逐步放慢响应，显著提高暴力破解成本且不会锁死账号。
+  if (maxCount >= 3) {
+    const delay = Math.min((maxCount - 2) * 250, 1500);
+    await new Promise((resolve) => setTimeout(resolve, delay));
   }
 }
 
 function bumpThrottle(keys) {
   const db = getDb();
   const now = new Date();
+  const configured = Number(getSetting('security.loginMaxAttempts', config.loginMaxAttempts));
+  const maxAttempts = Number.isFinite(configured) && configured >= 1 ? configured : config.loginMaxAttempts;
   for (const key of keys) {
     const row = db.get('SELECT * FROM login_throttle WHERE key = ?', [key]);
     if (!row) {
@@ -50,7 +62,7 @@ function bumpThrottle(keys) {
       continue;
     }
     const count = Number(row.count) + 1;
-    const blocked = count >= config.loginMaxAttempts
+    const blocked = count >= maxAttempts
       ? new Date(Date.now() + config.loginLockMinutes * 60000).toISOString()
       : null;
     db.run('UPDATE login_throttle SET count = ?, blocked_until = ? WHERE key = ?', [count, blocked, key]);
@@ -60,6 +72,18 @@ function bumpThrottle(keys) {
 function clearThrottle(keys) {
   const db = getDb();
   for (const key of keys) db.run('DELETE FROM login_throttle WHERE key = ?', [key]);
+}
+
+/** 清理已解锁且长期无活动的限流记录，避免 login_throttle 无限增长 */
+export function cleanupLoginThrottle() {
+  const now = Date.now();
+  const res = getDb().run(
+    `DELETE FROM login_throttle
+      WHERE (blocked_until IS NOT NULL AND blocked_until < ?)
+         OR (blocked_until IS NULL AND first_at < ?)`,
+    [new Date(now).toISOString(), new Date(now - 24 * 3600 * 1000).toISOString()],
+  );
+  return res.changes;
 }
 
 function publicUser(user) {
@@ -80,7 +104,7 @@ export function registerAuthRoutes(app) {
     const password = assertString(ctx.body?.password, { field: 'password', min: 1, max: 128, trim: false });
 
     const keys = throttleKeys(ctx.ip, username);
-    checkThrottle(keys);
+    await checkThrottle(keys);
 
     const user = getUserByUsername(username);
     const fail = (reason, shouldAudit = true) => {
@@ -112,17 +136,10 @@ export function registerAuthRoutes(app) {
       });
       throw new HttpError('FORBIDDEN', { message: '账号已被禁用，请联系管理员' });
     }
-    if (user.locked_until && new Date(user.locked_until).getTime() > Date.now()) {
-      throw new HttpError('ACCOUNT_LOCKED', { message: '账号已被临时锁定，请稍后再试' });
-    }
     if (!verifyPassword(password, user.password_hash)) {
+      // 只记录失败次数用于审计，不再按账号硬锁：硬锁会被用来锁死管理员。
       const attempts = Number(user.failed_attempts) + 1;
-      const locked = attempts >= config.loginMaxAttempts
-        ? new Date(Date.now() + config.loginLockMinutes * 60000).toISOString()
-        : null;
-      getDb().run('UPDATE users SET failed_attempts = ?, locked_until = ? WHERE id = ?', [
-        attempts, locked, user.id,
-      ]);
+      getDb().run('UPDATE users SET failed_attempts = ? WHERE id = ?', [attempts, user.id]);
       fail('bad_password');
     }
 
@@ -134,7 +151,8 @@ export function registerAuthRoutes(app) {
 
     const session = createSession(user.id, { ip: ctx.ip, ua: ctx.ua });
     ctx.setCookie(SESSION_COOKIE, session.token, {
-      maxAge: config.sessionTtlHours * 3600,
+      // 以会话实际过期时间为准，跟随 security.sessionTtlHours 设置
+      maxAge: Math.max(60, Math.floor((new Date(session.expiresAt).getTime() - Date.now()) / 1000)),
       secure: isHttpsRequest(ctx.req),
     });
 
