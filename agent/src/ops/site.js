@@ -19,7 +19,7 @@ import { PATHS, siteRoot, siteLogDir, phpSocketPath, phpPoolPath } from '../../.
 import { renderSiteVhost } from '../../../shared/render/nginx.js';
 import { renderPhpPool } from '../../../shared/render/php-pool.js';
 import {
-  s, arr, oneOf, bool, absPath, obj, ArgError, SLUG_RE, DOMAIN_RE, USER_RE,
+  s, n, arr, oneOf, bool, absPath, obj, ArgError, SLUG_RE, DOMAIN_RE, USER_RE,
 } from './args.js';
 
 const CERT_PREFIXES = ['/etc/letsencrypt/live', '/etc/letsencrypt/archive', PATHS.CERT_ROOT];
@@ -373,6 +373,36 @@ export const siteOps = {
       const st = fs.statSync(file);
       emit.log('info', `备份完成，大小 ${(st.size / 1048576).toFixed(1)}MB`);
       return { path: file, sizeBytes: st.size };
+    },
+  },
+
+  'site.backup.prune': {
+    validate: (args) => ({
+      keepDays: Math.floor(n(args.keepDays ?? 30, { field: 'keepDays', min: 1, max: 3650 })),
+    }),
+    run: async ({ keepDays }, emit) => {
+      const dir = PATHS.BACKUP_ROOT;
+      if (!fs.existsSync(dir)) return { scanned: 0, deleted: [], freedBytes: 0 };
+      const cutoff = Date.now() - keepDays * 86400 * 1000;
+      let scanned = 0;
+      let freedBytes = 0;
+      const deleted = [];
+      for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+        // 只处理备份目录顶层的普通备份文件，不跟随符号链接、不递归
+        if (!ent.isFile() || !ent.name.endsWith('.tar.gz')) continue;
+        scanned += 1;
+        const file = path.join(dir, ent.name);
+        assertWithin(dir, file);
+        const st = fs.statSync(file);
+        if (st.mtimeMs >= cutoff) continue;
+        fs.unlinkSync(file);
+        freedBytes += st.size;
+        deleted.push(file);
+      }
+      if (deleted.length) {
+        emit.log('info', `已清理 ${deleted.length} 个过期备份，释放 ${(freedBytes / 1048576).toFixed(1)}MB`);
+      }
+      return { scanned, deleted, freedBytes };
     },
   },
 

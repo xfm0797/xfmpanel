@@ -87,6 +87,7 @@ export const config = Object.freeze({
   taskConcurrency: int('XFMP_TASK_CONCURRENCY', 2),
   taskPollMs: int('XFMP_TASK_POLL_MS', 1000),
   taskRetentionDays: int('XFMP_TASK_RETENTION_DAYS', 30),
+  backupRetentionDays: int('XFMP_BACKUP_RETENTION_DAYS', 30),
   certCheckRetentionDays: int('XFMP_CERT_CHECK_RETENTION_DAYS', 90),
   auditRetentionDays: int('XFMP_AUDIT_RETENTION_DAYS', 180),
 
