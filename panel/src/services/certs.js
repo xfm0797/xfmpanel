@@ -134,6 +134,8 @@ export function issueCertificate({ siteId, domains, force = false }, actor) {
 export function renewCertificate(id, actor, { auto = false } = {}) {
   const cert = getCertificate(id);
   if (cert.status === 'revoked') throw errors.conflict('证书已吊销，无法续期');
+  // 上传证书不受 certbot 管理，续期必然失败，直接给出明确指引
+  if (cert.provider !== 'acme') throw errors.conflict('该证书为手动上传，无法自动续期，请重新上传新证书');
   assertNoCertTask(cert.site_id);
 
   const task = createTask({

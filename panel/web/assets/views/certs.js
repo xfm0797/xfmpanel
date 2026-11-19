@@ -45,7 +45,7 @@ export async function render(el, ctx) {
             </td>
             <td class="small">${c.autoRenew ? '<span class="badge ok">开启</span>' : '<span class="badge muted">关闭</span>'}</td>
             <td class="actions">
-              ${canWrite ? `<button class="btn btn-sm" data-renew="${c.id}">续期</button>
+              ${canWrite ? `${c.provider === 'acme' ? `<button class="btn btn-sm" data-renew="${c.id}">续期</button>` : ''}
               <button class="btn btn-sm btn-ghost" data-revoke="${c.id}">吊销</button>` : ''}
             </td>
           </tr>`).join('')}</tbody>

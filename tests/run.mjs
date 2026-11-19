@@ -12,6 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { assertDomain } from '../shared/validate.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BASE = process.env.XFMP_BASE || 'http://127.0.0.1:8787';
@@ -87,6 +88,7 @@ async function main() {
   const health = await api('/api/v1/system/health');
   ok('健康检查返回 ok', health.status === 200 && health.json?.data?.panel === 'ok');
   ok('agent 在线', health.json?.data?.agent?.ok === true, health.json?.data?.agent?.error);
+  ok('中文域名统一转为 punycode', assertDomain('例子.中国') === 'xn--fsqu00a.xn--fiqs8s');
 
   const anon = await api('/api/v1/sites');
   ok('未登录访问站点列表返回 401', anon.status === 401, `实际 ${anon.status}`);
