@@ -269,6 +269,7 @@ npm run reset-admin -- --password 'NewPass1234'  # 重置超管密码并踢出�
 | [docs/DATABASE.md](docs/DATABASE.md) | 表结构、索引、状态机、设计取舍 |
 | [docs/API.md](docs/API.md) | 全部接口、参数、示例、错误码 |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | 安装、配置、TLS、防火墙、升级、备份、排障 |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | 日常巡检、配置变更、证书/站点运维、容量治理、故障处置 |
 
 ## 截图
 

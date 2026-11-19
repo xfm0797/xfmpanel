@@ -132,7 +132,7 @@ curl -s http://127.0.0.1:8787/api/v1/system/health | jq
 | `XFMP_DATA_DIR` / `XFMP_DB` | `/var/lib/xfmpanel` | 数据与数据库 |
 | `XFMP_AGENT_MODE` | `unix` | **生产必须为 `unix`**；`stub` 仅供开发 |
 | `XFMP_COOKIE_SECURE` | `auto` | 反代下自动按 `X-Forwarded-Proto` 加 Secure |
-| `XFMP_TRUST_PROXY` | `1` | 信任 `X-Forwarded-For`（必须在反代后面才开） |
+| `XFMP_TRUST_PROXY` | `0` | 信任 `X-Forwarded-For`；只有面板位于可信反代之后才设为 `1` |
 | `XFMP_SESSION_TTL_HOURS` | `12` | 会话滑动过期 |
 | `XFMP_LOGIN_MAX_ATTEMPTS` | `5` | 触发锁定前的失败次数 |
 | `XFMP_TASK_CONCURRENCY` | `2` | 同时执行的任务数 |
@@ -283,7 +283,7 @@ npm run dev
 - 自动 `XFMP_ENV=dev` + stub agent，不需要 Linux/root；
 - 数据落在 `./data`，可随时删除重来；
 - stub 会模拟安装进度、证书签发（域名含 `fail` 时模拟失败），用于验证前端与错误提示；
-- 端到端测试：`npm test`（35 项断言）。
+- 端到端测试：`npm test`（46 项断言，会创建/删除临时站点，勿在生产环境执行）。
 
 ## 12. 上线检查清单
 
