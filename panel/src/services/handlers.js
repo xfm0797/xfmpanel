@@ -401,7 +401,13 @@ export const handlers = {
     const { certId, siteId, domain } = ctx.task.payload;
     const db = getDb();
     const site = getSite(siteId);
-    await callAgent('cert.revoke', { slug: site.slug, domain, certPath: null }, agentHooks(ctx));
+    const cert = db.get('SELECT provider FROM certificates WHERE id = ?', [certId]);
+    if (cert?.provider === 'upload') {
+      // 本地上传证书没有 ACME 记录，无需（也不应）调用 certbot 做吊销。
+      ctx.log('info', '本地上传证书无 ACME 记录，跳过 certbot 吊销');
+    } else {
+      await callAgent('cert.revoke', { slug: site.slug, domain, certPath: null }, agentHooks(ctx));
+    }
     db.run("UPDATE certificates SET status = 'revoked', auto_renew = 0, updated_at = ? WHERE id = ?", [
       nowIso(), certId,
     ]);

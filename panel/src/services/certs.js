@@ -180,6 +180,9 @@ export function uploadCertificate({ siteId, domain, certPem, keyPem, chainPem = 
   assertNoCertTask(siteId);
   const db = getDb();
   const target = domain ? assertDomains([domain], 'domain')[0] : site.domain;
+  if (!site.domains.includes(target)) {
+    throw errors.validation('证书域名必须属于该站点，请先添加域名', 'domain');
+  }
   const existing = db.get('SELECT * FROM certificates WHERE site_id = ? AND domain = ?', [siteId, target]);
   const now = nowIso();
 

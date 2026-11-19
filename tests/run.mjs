@@ -201,6 +201,17 @@ async function main() {
     ok('证书续期任务成功', renewTask.status === 'success', renewTask.error);
   }
 
+  const foreign = await api('/api/v1/certificates/upload', {
+    method: 'POST',
+    body: {
+      siteId,
+      domain: 'not-this-site.example',
+      certPem: `-----BEGIN CERTIFICATE-----\n${'A'.repeat(120)}\n-----END CERTIFICATE-----`,
+      keyPem: `-----BEGIN PRIVATE KEY-----\n${'A'.repeat(120)}\n-----END PRIVATE KEY-----`,
+    },
+  });
+  ok('非本站域名的上传证书被拒绝', foreign.status === 422, JSON.stringify(foreign.json));
+
   const badSite = await api('/api/v1/sites', {
     method: 'POST',
     body: { name: 'failing', slug: `fail-${Date.now().toString(36).slice(-4)}`, domains: ['fail-test.example.com'], phpVersion: '8.3' },
